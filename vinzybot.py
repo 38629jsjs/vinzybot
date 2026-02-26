@@ -232,8 +232,9 @@ def check_channel_perms(user_id, channel_id):
 
 def get_user_channel(user_id):
     """Fetch the specific channel locked to a user from the Neon PostgreSQL database"""
-    conn = db_pool.getconn()
+    conn = None
     try:
+        conn = db_pool.getconn()
         c = conn.cursor()
         # Ensure privacy: We only look for the channel belonging to THIS user_id
         # Postgres uses %s placeholder instead of ?
@@ -249,7 +250,8 @@ def get_user_channel(user_id):
         return None
     finally:
         # Crucial: Always return the connection to the pool
-        db_pool.putconn(conn)
+        if conn:
+            db_pool.putconn(conn)
 
 # ==========================================
 # BROADCAST COMMAND LOGIC
@@ -304,18 +306,62 @@ def execute_private_broadcast(message, user_channel):
 # ==========================================
 # SECTION 5: AUTO-SEND (CAMBODIA TIME)
 # ==========================================
-def schedule_checker():
-    while True:
-        # Cambodia Timezone
-        tz_kh = pytz.timezone('Asia/Phnom Penh')
-        now_kh = datetime.now(tz_kh).strftime("%H:%M")
-        
-        # Example: Send message at 09:00 AM
-        if now_kh == "09:00":
-            # Logic to fetch channels from DB and send
-            pass
-        time.sleep(60)
 
+def schedule_checker():
+    """
+    Background thread to handle daily tasks at specific times.
+    Uses a date-tracking variable to prevent duplicate execution.
+    """
+    last_run_date = "" # Keeps track of the last day the task ran
+    
+    while True:
+        try:
+            # Set Timezone to Cambodia
+            tz_kh = pytz.timezone('Asia/Phnom_Penh')
+            now = datetime.now(tz_kh)
+            
+            current_time = now.strftime("%H:%M")
+            current_date = now.strftime("%Y-%m-%d")
+
+            # Condition: It is 09:00 AM AND we haven't run it yet today
+            if current_time == "09:00" and last_run_date != current_date:
+                print(f"⏰ [Scheduled Task] Starting 09:00 AM Broadcast - {current_date}")
+                
+                # --- LOGIC TO FETCH ALL CHANNELS AND SEND ---
+                conn = None
+                try:
+                    conn = db_pool.getconn()
+                    c = conn.cursor()
+                    # Fetch all users who have a target channel set
+                    c.execute("SELECT user_id, target_channel FROM users WHERE target_channel IS NOT NULL")
+                    active_users = c.fetchall()
+                    
+                    for user_id, channel in active_users:
+                        try:
+                            # Example message - customize as needed
+                            # bot.send_message(channel, "📢 Good morning! This is your daily scheduled update.")
+                            pass 
+                        except Exception as send_err:
+                            print(f"❌ Failed to send to {channel}: {send_err}")
+                            
+                    # Mark as completed for today
+                    last_run_date = current_date
+                    
+                except Exception as db_err:
+                    print(f"❌ Database error in scheduler: {db_err}")
+                finally:
+                    if conn:
+                        db_pool.putconn(conn)
+                # --------------------------------------------
+
+        except Exception as global_err:
+            print(f"⚠️ Scheduler Heartbeat Error: {global_err}")
+
+        # Sleep for 30 seconds. Checking twice a minute ensures we 
+        # never miss the 09:00 window due to execution lag.
+        time.sleep(30)
+
+# Start the background thread
 threading.Thread(target=schedule_checker, daemon=True).start()
 
 # ==========================================
@@ -484,81 +530,6 @@ def remove_keyboard(message):
     bot.send_message(message.chat.id, "✅ Keyboard hidden.", reply_markup=markup)
 
 
-# --- SMART TEXT BUTTON ROUTER ---
-@bot.message_handler(func=lambda m: True)
-def handle_menu_text(message):
-    u_id = message.from_user.id
-    if not is_authorized(u_id):
-        return
-    
-    lang = get_user_lang(u_id)
-    text = message.text
-
-    # 1. LANGUAGE TOGGLE LOGIC
-    if text in ["🌐 Language", "🌐 ភាសា"]:
-        markup = types.InlineKeyboardMarkup()
-        btn_en = types.InlineKeyboardButton("English 🇺🇸", callback_data="set_lang_en")
-        btn_kh = types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data="set_lang_kh")
-        markup.add(btn_en, btn_kh)
-        bot.send_message(message.chat.id, "Select Language / សូមជ្រើសរើសភាសា:", reply_markup=markup)
-
-    # 2. HELP MENU LOGIC
-    elif text in ["❓ Help", "❓ ជំនួយ"]:
-        help_msg = (
-            "📖 **How to use:**\n\n"
-            "1. **Set Channel**: Use this first to link your channel.\n"
-            "2. **Create Poll**: Send a list of names to start voting.\n"
-            "3. **Audit**: Run this to find fake bot members.\n"
-            "4. **Detection**: Keep this active to catch vote boosting."
-            if lang == 'en' else
-            "📖 **របៀបប្រើប្រាស់:**\n\n"
-            "1. **កំណត់ឆានែល**: ប្រើវាដំបូងគេដើម្បីភ្ជាប់ទៅ Channel របស់អ្នក។\n"
-            "2. **បង្កើតការបោះឆ្នោត**: ផ្ញើបញ្ជីឈ្មោះដើម្បីចាប់ផ្តើមបោះឆ្នោត។\n"
-            "3. **ពិនិត្យឆានែល**: ប្រើវាដើម្បីស្វែងរកសមាជិកក្លែងក្លាយ (Bot)។\n"
-            "4. **ស្វែងរក Bot**: បើកវាដើម្បីតាមដានការលួចបន្លំសន្លឹកឆ្នោត។"
-        )
-        bot.send_message(message.chat.id, help_msg)
-
-    # 3. CREATE POLL
-    elif text in ["📊 Create Poll", "📊 បង្កើតការបោះឆ្នោត"]:
-        prompt = "📋 Send name list (one per line):" if lang == 'en' else "📋 សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (មួយឈ្មោះក្នុងមួយបន្ទាត់):"
-        msg = bot.send_message(message.chat.id, prompt)
-        bot.register_next_step_handler(msg, process_poll_names)
-
-    # 4. AUDIT CHANNEL
-    elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
-        bot.send_message(message.chat.id, "🔎 Scanning... | កំពុងពិនិត្យ...")
-        check_stats(message)
-
-    # 5. SET CHANNEL
-    elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
-        # Ensure your set_channel_prompt function is defined elsewhere
-        set_channel_prompt(message)
-
-    # 6. BROADCAST
-    elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
-        start_broadcast(message)
-
-    # 7. SCHEDULE INFO
-    elif text in ["📅 Schedule Info", "📅 ព័ត៌មានកាលវិភាគ"]:
-        tz_kh = pytz.timezone('Asia/Phnom Penh')
-        now_kh = datetime.now(tz_kh).strftime("%H:%M:%S")
-        msg = (f"⏰ **System Status**\n\nTime (KH): {now_kh}\nAuto-Post: 09:00 AM" if lang == 'en' else 
-               f"⏰ **ស្ថានភាពប្រព័ន្ធ**\n\nម៉ោង (KH): {now_kh}\nបង្ហោះអូតូ: ម៉ោង ០៩:០០ ព្រឹក")
-        bot.send_message(message.chat.id, msg)
-
-    # 8. POLL DETECTION
-    elif text in ["🛡️ Poll Detection", "🛡️ ស្វែងរក Bot"]:
-        msg = "🛡️ Anti-Boost Active" if lang == 'en' else "🛡️ ការការពារការលួចបន្លំកំពុងដំណើរការ"
-        bot.send_message(message.chat.id, msg)
-
-    # 9. OWNER ONLY
-    elif u_id == SUPER_ADMIN_ID:
-        if text == "➕ Add Admin":
-            add_admin_prompt(message)
-        elif text == "➖ Remove Admin":
-            remove_admin_prompt(message)
-
 # --- CALLBACK FOR LANGUAGE SWITCHING ---
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_lang_'))
 def callback_language(call):
@@ -568,6 +539,7 @@ def callback_language(call):
     msg = "Language updated! Use /menu" if new_lang == 'en' else "ភាសាត្រូវបានផ្លាស់ប្តូរ! សូមប្រើ /menu"
     bot.answer_callback_query(call.id, msg)
     bot.edit_message_text(msg, call.message.chat.id, call.message.message_id)
+
 
 # --- ADMIN MGMT FUNCTIONS (PostgreSQL Logic) ---
 def add_admin_prompt(message):
@@ -580,7 +552,6 @@ def process_add_admin(message):
         conn = db_pool.getconn()
         try:
             c = conn.cursor()
-            # Postgres UPSERT logic
             c.execute("""
                 INSERT INTO users (user_id, is_admin) 
                 VALUES (%s, 1) 
@@ -603,8 +574,6 @@ def remove_admin_prompt(message):
 def process_remove_admin(message):
     try:
         target_id = int(message.text)
-        
-        # Guard clause for Permanent Admins
         if target_id == SUPER_ADMIN_ID or target_id in PERMANENT_ADMINS:
             bot.send_message(message.chat.id, "🚫 Cannot remove a Permanent Admin.")
             return
@@ -625,94 +594,117 @@ def process_remove_admin(message):
 # SECTION 8: FULL FEATURE MENU & ROUTING
 # ==========================================
 
-@bot.message_handler(commands=['menu', 'start'])
-def show_main_menu(message):
-    """Displays the persistent grid menu for all authorized users"""
-    u_id = message.from_user.id
-    if not is_authorized(u_id):
-        # Access Denied Message
-        msg = ("🚫 **Access Denied!**\n\n"
-               "EN: This bot is private. Please pay to gain access.\n"
-               "KH: គណនីរបស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ទេ។ សូមទិញសិទ្ធិប្រើប្រាស់ពីម្ចាស់ប៊ត។")
-        bot.send_message(message.chat.id, msg)
-        return
-        
-    # Standard grid layout (2 buttons per row)
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    
-    # 1. CORE BUTTONS (Visible to both Owner and Admin)
-    btn1 = "📊 Create Poll"
-    btn2 = "🔍 Audit Channel"
-    btn3 = "📢 Broadcast"
-    btn4 = "📅 Schedule Info"
-    btn5 = "📍 Set Channel"
-    btn6 = "🛡️ Poll Detection"
-    
-    markup.add(btn1, btn2)
-    markup.add(btn3, btn4)
-    markup.add(btn5, btn6)
-    
-    # 2. OWNER-ONLY MANAGEMENT BUTTONS
-    if u_id == SUPER_ADMIN_ID:
-        markup.add("➕ Add Admin", "➖ Remove Admin")
-        menu_text = "👑 **OWNER CONTROL PANEL**\nSelect a tool from the menu below:"
-    else:
-        menu_text = "🛡️ **ADMIN CONTROL PANEL**\nSelect a tool from the menu below:"
+# --- SUPPORTING FUNCTIONS FOR SETTINGS ---
 
-    bot.send_message(message.chat.id, menu_text, reply_markup=markup)
+def set_channel_prompt(message):
+    """Starts the process to set the target channel"""
+    u_id = message.from_user.id
+    lang = get_user_lang(u_id)
+    prompt = (
+        "📍 **Target Channel**\n\nEN: Send the channel username (including @) or ID:\n"
+        "KH: សូមផ្ញើឈ្មោះ Channel របស់អ្នក (បញ្ចូល @ ផង):"
+    )
+    msg = bot.send_message(message.chat.id, prompt)
+    bot.register_next_step_handler(msg, process_set_channel)
+
+def process_set_channel(message):
+    """Saves the channel to PostgreSQL"""
+    u_id = message.from_user.id
+    channel_val = message.text.strip()
+    
+    # Auto-add @ if user forgot it
+    if not channel_val.startswith('@') and not channel_val.startswith('-100'):
+        channel_val = f"@{channel_val}"
+        
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        c = conn.cursor()
+        c.execute("""
+            UPDATE users SET target_channel = %s WHERE user_id = %s
+        """, (channel_val, u_id))
+        conn.commit()
+        bot.reply_to(message, f"✅ Success! Target set to: {channel_val}")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {e}")
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
+# REMOVED: Duplicate get_user_channel function to prevent connection leaks.
+# The bot will now use the correct version defined in Section 4.
 
 # --- TEXT BUTTON ROUTER ---
-# This connects the text on the buttons to their respective functions
+
 @bot.message_handler(func=lambda m: True)
 def handle_all_buttons(message):
     u_id = message.from_user.id
     if not is_authorized(u_id): 
         return
+    
+    lang = get_user_lang(u_id)
+    text = message.text
 
-    # 1. POLL CREATION
-    if message.text == "📊 Create Poll":
-        msg = bot.send_message(message.chat.id, "📋 EN: Send name list (one per line):\nKH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (មួយឈ្មោះក្នុងមួយបន្ទាត់):")
+    # 1. LANGUAGE TOGGLE
+    if text in ["🌐 Language", "🌐 ភាសា"]:
+        markup = types.InlineKeyboardMarkup()
+        btn_en = types.InlineKeyboardButton("English 🇺🇸", callback_data="set_lang_en")
+        btn_kh = types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data="set_lang_kh")
+        markup.add(btn_en, btn_kh)
+        bot.send_message(message.chat.id, "Select Language / សូមជ្រើសរើសភាសា:", reply_markup=markup)
+
+    # 2. HELP MENU
+    elif text in ["❓ Help", "❓ ជំនួយ"]:
+        help_msg = (
+            "📖 **How to use:**\n\n"
+            "1. **Set Channel**: Link your channel first.\n"
+            "2. **Create Poll**: Send names for a poll.\n"
+            "3. **Audit**: Find bot members.\n"
+            "4. **Detection**: Watch for fake votes."
+            if lang == 'en' else
+            "📖 **របៀបប្រើប្រាស់:**\n\n"
+            "1. **កំណត់ឆានែល**: ភ្ជាប់ទៅ Channel របស់អ្នកជាមុនសិន។\n"
+            "2. **បង្កើតការបោះឆ្នោត**: ផ្ញើឈ្មោះដើម្បីបង្កើត Poll។"
+        )
+        bot.send_message(message.chat.id, help_msg)
+
+    # 3. POLL CREATION
+    elif text in ["📊 Create Poll", "📊 បង្កើតការបោះឆ្នោត"]:
+        prompt = "📋 Send name list (one per line):" if lang == 'en' else "📋 សូមផ្ញើបញ្ជីឈ្មោះសមាជិក:"
+        msg = bot.send_message(message.chat.id, prompt)
         bot.register_next_step_handler(msg, process_poll_names)
 
-    # 2. CHANNEL AUDIT (Anti-Bot Analysis)
-    elif message.text == "🔍 Audit Channel":
-        bot.send_message(message.chat.id, "🔎 EN: Running Channel Audit... | KH: កំពុងពិនិត្យ Channel...")
+    # 4. CHANNEL AUDIT
+    elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
+        bot.send_message(message.chat.id, "🔎 Running Audit... | កំពុងពិនិត្យ...")
         check_stats(message)
 
-    # 3. BROADCAST
-    elif message.text == "📢 Broadcast":
+    # 5. BROADCAST
+    elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
         start_broadcast(message)
 
-    # 4. SCHEDULE INFO (Syncs with Cambodia Time)
-    elif message.text == "📅 Schedule Info":
-        tz_kh = pytz.timezone('Asia/Phnom Penh')
+    # 6. SCHEDULE INFO
+    elif text in ["📅 Schedule Info", "📅 ព័ត៌មានកាលវិភាគ"]:
+        tz_kh = pytz.timezone('Asia/Phnom_Penh')
         now_kh = datetime.now(tz_kh).strftime("%H:%M:%S")
         bot.send_message(message.chat.id, 
-                         f"⏰ **Schedule System Status**\n\n"
-                         f"Current Time (KH): {now_kh}\n"
-                         f"Auto-Post Time: 09:00 AM\n"
-                         f"Status: Active ✅\n\n"
-                         f"Note: Your scheduled posts are automatically synced.")
+                         f"⏰ **System Status**\n\nTime (KH): {now_kh}\nAuto-Post: 09:00 AM" if lang == 'en' else 
+                         f"⏰ **ស្ថានភាពប្រព័ន្ធ**\n\nម៉ោង (KH): {now_kh}\nបង្ហោះអូតូ: ម៉ោង ០៩:០០ ព្រឹក")
 
-    # 5. CHANNEL SETTINGS
-    elif message.text == "📍 Set Channel":
+    # 7. CHANNEL SETTINGS
+    elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
         set_channel_prompt(message)
 
-    # 6. ANTI-BOOST MONITOR (Live Status)
-    elif message.text == "🛡️ Poll Detection":
-        bot.send_message(message.chat.id, 
-                         "🕵️ **Anti-Boost Monitor Active**\n\n"
-                         "The system is currently scanning for:\n"
-                         "• Abnormal voting speed\n"
-                         "• SMM Drip-feed patterns\n"
-                         "• Instant spikes (>15 votes/3s)\n\n"
-                         "Alerts will trigger automatically if botting occurs.")
+    # 8. POLL DETECTION
+    elif text in ["🛡️ Poll Detection", "🛡️ ស្វែងរក Bot"]:
+        msg = "🛡️ Anti-Boost Active" if lang == 'en' else "🛡️ ការការពារការលួចបន្លំកំពុងដំណើរការ"
+        bot.send_message(message.chat.id, msg)
 
-    # 7. OWNER ONLY: USER MANAGEMENT
+    # 9. OWNER ONLY: USER MANAGEMENT
     elif u_id == SUPER_ADMIN_ID:
-        if message.text == "➕ Add Admin":
+        if text == "➕ Add Admin":
             add_admin_prompt(message)
-        elif message.text == "➖ Remove Admin":
+        elif text == "➖ Remove Admin":
             remove_admin_prompt(message)
 
 # --- POLL PROCESSING LOGIC ---
@@ -723,25 +715,23 @@ def process_poll_names(message):
     target_channel = get_user_channel(user_id) 
     
     if not target_channel:
-        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន (/set_channel) | EN: Set channel first.")
+        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន! | EN: Set channel first.")
         return
 
-    # Clean the input list
     names = [n.strip() for n in message.text.split('\n') if n.strip()]
-    
     if not names:
-        bot.reply_to(message, "❌ KH: បញ្ជីឈ្មោះទទេរ! | EN: List is empty.")
+        bot.reply_to(message, "❌ List is empty.")
         return
 
-    # Grouping names into chunks of 4
+    # Chunks of 4
     chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
     
-    # Overflow rule: Merge last person if they are alone
+    # 4+1 logic: if last chunk has only 1 person, add them to previous chunk
     if len(chunks) > 1 and len(chunks[-1]) == 1:
-        leftover_person = chunks.pop() 
-        chunks[-1].extend(leftover_person) 
+        leftover = chunks.pop() 
+        chunks[-1].extend(leftover) 
 
-    bot.send_message(message.chat.id, f"🚀 KH: កំពុងបង្កើត Poll ចំនួន {len(chunks)} ទៅកាន់ {target_channel}...")
+    bot.send_message(message.chat.id, f"🚀 Creating {len(chunks)} polls for {target_channel}...")
 
     for index, group in enumerate(chunks, start=1):
         try:
@@ -751,16 +741,11 @@ def process_poll_names(message):
                 options=group,
                 is_anonymous=True 
             )
-            time.sleep(1) # Safety delay
+            time.sleep(1)
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Error in Poll {index}: {str(e)}")
 
-    final_msg = (
-        f"✅ **Process Complete!**\n"
-        f"EN: {len(chunks)} polls sent to {target_channel}.\n"
-        f"KH: Poll ចំនួន {len(chunks)} ត្រូវបានផ្ញើទៅ {target_channel} រួចរាល់។"
-    )
-    bot.send_message(message.chat.id, final_msg)
+    bot.send_message(message.chat.id, "✅ Process Complete!")
 # ==========================================
 # FINAL EXECUTION BLOCK
 # ==========================================
