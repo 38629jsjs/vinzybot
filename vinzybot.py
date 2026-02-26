@@ -16,26 +16,61 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (Admins/Users/Privacy)
 # ==========================================
+
+# 1. PERMANENT AUTHORIZATION LIST
+# Add your ID and any permanent Admin IDs here. 
+# These will NEVER be deleted, even when updating on Koyeb.
+PERMANENT_ADMINS = [8702798367, 123456789] # Replace 123456789 with your secondary admin ID
+
 def init_db():
+    """Initializes the local SQLite database for channel settings and temporary admins"""
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
     # Users table: stores who is allowed to use the bot and their specific channel
+    # user_id: Unique Telegram ID
+    # is_admin: 1 for Admin, 0 for regular user
+    # target_channel: The @username of the channel they manage
     c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (user_id INTEGER PRIMARY KEY, is_admin INTEGER, target_channel TEXT)''')
+                 (user_id INTEGER PRIMARY KEY, 
+                  is_admin INTEGER DEFAULT 0, 
+                  target_channel TEXT)''')
     conn.commit()
     conn.close()
 
 def is_authorized(user_id):
-    if user_id == SUPER_ADMIN_ID: return True
+    """Checks if a user has permission to use the bot tools"""
+    # FIRST: Check the hardcoded SUPER_ADMIN_ID
+    if user_id == SUPER_ADMIN_ID:
+        return True
+    
+    # SECOND: Check the PERMANENT_ADMINS list (Safe from Koyeb wipes)
+    if user_id in PERMANENT_ADMINS:
+        return True
+        
+    # THIRD: Check the database (For admins added via the /add_admin button)
+    # Note: These admins will be lost if the bot is redeployed on Koyeb without a Volume
+    try:
+        conn = sqlite3.connect('bot_data.db')
+        c = conn.cursor()
+        c.execute("SELECT is_admin FROM users WHERE user_id=?", (user_id,))
+        res = c.fetchone()
+        conn.close()
+        # Return True only if the user exists and is_admin is set to 1
+        return res is not None and res[0] == 1
+    except Exception:
+        return False
+
+def get_user_channel(user_id):
+    """Retrieves the target channel associated with a specific user"""
     conn = sqlite3.connect('bot_data.db')
     c = conn.cursor()
-    c.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    res = c.fetchone()
+    c.execute("SELECT target_channel FROM users WHERE user_id=?", (user_id,))
+    result = c.fetchone()
     conn.close()
-    return res is not None
+    return result[0] if result and result[0] else None
 
+# Initialize the database on startup
 init_db()
-
 # ==========================================
 # SECTION 3: POLL & ANTI-BOOST LOGIC
 # ==========================================
