@@ -327,22 +327,72 @@ def check_stats(message):
 # SECTION 7: USER INTERFACE & PERMISSIONS
 # ==========================================
 
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=['start', 'menu'])
 def start(message):
     u_id = message.from_user.id
-    if u_id == SUPER_ADMIN_ID:
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("Add Admin", "Remove Admin", "Set Channel", "Broadcast")
-        bot.send_message(message.chat.id, "Welcome Creator. Control the system using the buttons below.", reply_markup=markup)
-    elif is_authorized(u_id):
-        bot.send_message(message.chat.id, "Welcome Authorized User. Use /set_channel to begin or /menu for tools.")
-    else:
+    
+    # Check if they are authorized
+    if not is_authorized(u_id):
         # KH/EN Sale Message
         msg = ("🚫 Access Denied!\n\n"
                "EN: This bot is private. Please pay to gain access.\n"
                "KH: គណនីរបស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ទេ។ សូមទិញសិទ្ធិប្រើប្រាស់ពីម្ចាស់ប៊ត។\n\n"
                "Features: Polls, Anti-Raid, Scheduling, Stats.")
         bot.send_message(message.chat.id, msg)
+        return
+
+    # Create the "4 Dots" Persistent Menu
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    
+    if u_id == SUPER_ADMIN_ID:
+        # Owner Buttons
+        markup.add("📊 Create Poll", "🔍 Detect Botting")
+        markup.add("📍 Set Channel", "📢 Broadcast")
+        markup.add("➕ Add Admin", "➖ Remove Admin")
+        bot.send_message(message.chat.id, "Welcome Creator. Control the system using the buttons below or the 4-dot menu.", reply_markup=markup)
+    else:
+        # Authorized User Buttons
+        markup.add("📊 Create Poll", "🔍 Detect Botting")
+        markup.add("📍 Set Channel")
+        bot.send_message(message.chat.id, "Welcome Authorized User. Use the buttons below to begin.", reply_markup=markup)
+
+@bot.message_handler(commands=['normal'])
+def remove_keyboard(message):
+    """Removes the persistent menu buttons and returns to standard text input"""
+    markup = types.ReplyKeyboardRemove()
+    bot.send_message(message.chat.id, "✅ Back to normal mode. Type /menu to show buttons again.", reply_markup=markup)
+
+# --- TEXT BUTTON ROUTING ---
+# This ensures clicking the "4-dot" menu buttons actually triggers the code
+@bot.message_handler(func=lambda m: True)
+def handle_menu_text(message):
+    u_id = message.from_user.id
+    if not is_authorized(u_id):
+        return
+
+    if message.text == "📊 Create Poll":
+        prompt = (
+            "📋 **AUTO POLL GENERATOR**\n\n"
+            "EN: Please send the list of names (one name per line).\n"
+            "KH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (មួយឈ្មោះក្នុងមួយបន្ទាត់):"
+        )
+        msg = bot.send_message(message.chat.id, prompt)
+        bot.register_next_step_handler(msg, process_poll_names)
+
+    elif message.text == "🔍 Detect Botting":
+        check_stats(message)
+
+    elif message.text == "📍 Set Channel":
+        set_channel_prompt(message)
+
+    elif message.text == "📢 Broadcast" and u_id == SUPER_ADMIN_ID:
+        start_broadcast(message)
+
+    elif message.text == "➕ Add Admin" and u_id == SUPER_ADMIN_ID:
+        add_admin_prompt(message)
+
+    elif message.text == "➖ Remove Admin" and u_id == SUPER_ADMIN_ID:
+        remove_admin_prompt(message)
 
 # --- ADMIN MANAGEMENT LOGIC ---
 
@@ -356,8 +406,6 @@ def process_add_admin(message):
         new_id = int(message.text)
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
-        # UPSERT: If user exists, only update is_admin to 1. 
-        # This prevents erasing their existing target_channel data.
         c.execute('''INSERT INTO users (user_id, is_admin) VALUES(?, 1)
                      ON CONFLICT(user_id) DO UPDATE SET is_admin=1''', (new_id,))
         conn.commit()
@@ -376,8 +424,6 @@ def process_remove_admin(message):
         target_id = int(message.text)
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
-        # We set is_admin to 0 instead of deleting the row to keep their channel settings if needed, 
-        # or you can use DELETE if you want a total wipe.
         c.execute("UPDATE users SET is_admin=0 WHERE user_id=?", (target_id,))
         conn.commit()
         conn.close()
@@ -387,27 +433,19 @@ def process_remove_admin(message):
 
 # --- CHANNEL SETTING LOGIC ---
 
-@bot.message_handler(func=lambda m: m.text == "Set Channel" or m.text == "/set_channel")
 def set_channel_prompt(message):
-    if not is_authorized(message.from_user.id):
-        bot.reply_to(message, "🚫 No access.")
-        return
     msg = bot.reply_to(message, "EN: Send your Channel ID (e.g., @yourchannel)\nKH: សូមផ្ញើ ID Channel របស់អ្នក (ឧទាហរណ៍: @yourchannel):")
     bot.register_next_step_handler(msg, process_set_channel)
 
 def process_set_channel(message):
     try:
         channel_id = message.text.strip()
-        # Validation for Telegram Channel formats
         if not (channel_id.startswith("@") or channel_id.startswith("-100")):
             bot.reply_to(message, "❌ Invalid format. Must start with @ or -100")
             return
             
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
-        # UPSERT: If user exists, update target_channel.
-        # If user doesn't exist, insert new row. 
-        # This ensures we don't overwrite the is_admin status.
         c.execute('''INSERT INTO users (user_id, target_channel) VALUES(?, ?)
                      ON CONFLICT(user_id) DO UPDATE SET target_channel=excluded.target_channel''', 
                   (message.from_user.id, channel_id))
@@ -415,49 +453,94 @@ def process_set_channel(message):
         conn.close()
         bot.reply_to(message, f"✅ Target Channel set to: {channel_id}")
     except Exception as e:
-        bot.reply_to(message, "❌ Database error occurred while saving channel.")
+        bot.reply_to(message, f"❌ Database error: {str(e)}")
+
+# --- POLL GENERATION LOGIC ---
+
+def process_poll_names(message):
+    user_id = message.from_user.id
+    target_channel = get_user_channel(user_id) 
+    
+    if not target_channel:
+        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន | EN: Set channel first.")
+        return
+
+    names = [n.strip() for n in message.text.split('\n') if n.strip()]
+    if not names:
+        bot.reply_to(message, "❌ KH: បញ្ជីឈ្មោះទទេរ! | EN: List is empty.")
+        return
+
+    # 4+1 Rule Grouping
+    chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
+    if len(chunks) > 1 and len(chunks[-1]) == 1:
+        leftover_person = chunks.pop() 
+        chunks[-1].extend(leftover_person) 
+
+    bot.send_message(message.chat.id, f"🚀 Creating {len(chunks)} polls in {target_channel}...")
+
+    for index, group in enumerate(chunks, start=1):
+        try:
+            bot.send_poll(
+                chat_id=target_channel,
+                question=f"Poll {index}",
+                options=group,
+                is_anonymous=True # FIXED: Must be True for channels
+            )
+            time.sleep(1)
+        except Exception as e:
+            bot.send_message(message.chat.id, f"❌ Error in Poll {index}: {str(e)}")
+
+    bot.send_message(message.chat.id, "✅ Done! All polls sent successfully.")
 # ==========================================
 # SECTION 8: AUTO-POLL GENERATOR
 # ==========================================
 
 @bot.message_handler(commands=['menu'])
 def show_main_menu(message):
-    """Displays the main interface with the two key sections"""
+    """Displays the main interface with the persistent 4-dot grid menu"""
     if not is_authorized(message.from_user.id):
         return
         
-    markup = types.InlineKeyboardMarkup(row_width=2)
+    # Using ReplyKeyboardMarkup for the persistent "4-dot" grid menu
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
-    # Section 1: Auto-creation
-    btn1 = types.InlineKeyboardButton("📊 Auto Create Poll", callback_data="auto_poll")
-    # Section 2: Bot Detection
-    btn2 = types.InlineKeyboardButton("🔍 Detect Fake Bot", callback_data="detect_bot")
+    btn1 = "📊 Auto Create Poll"
+    btn2 = "🔍 Detect Fake Bot"
+    btn3 = "📍 Set Channel"
     
-    markup.add(btn1, btn2)
+    # Add buttons to the grid
+    markup.add(btn1, btn2, btn3)
     
     menu_text = (
         "--- 🤖 MAIN MENU ---\n\n"
-        "EN: Select an action below:\n"
-        "KH: សូមជ្រើសរើសសកម្មភាពខាងក្រោម:"
+        "EN: Select an action from the menu below:\n"
+        "KH: សូមជ្រើសរើសសកម្មភាពពីម៉ឺនុយខាងក្រោម:"
     )
     bot.send_message(message.chat.id, menu_text, reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_menu_clicks(call):
-    """Routes the menu clicks to the correct functions"""
-    if call.data == "auto_poll":
+# Handle the text button clicks from the ReplyKeyboard
+@bot.message_handler(func=lambda m: m.text in ["📊 Auto Create Poll", "🔍 Detect Fake Bot", "📍 Set Channel"])
+def handle_menu_text_buttons(message):
+    if not is_authorized(message.from_user.id):
+        return
+
+    if message.text == "📊 Auto Create Poll":
         prompt = (
             "📋 **SECTION 1: AUTO POLL**\n\n"
             "EN: Please send the list of names (one name per line).\n"
             "KH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (មួយឈ្មោះក្នុងមួយបន្ទាត់):"
         )
-        msg = bot.send_message(call.message.chat.id, prompt)
+        msg = bot.send_message(message.chat.id, prompt)
         bot.register_next_step_handler(msg, process_poll_names)
         
-    elif call.data == "detect_bot":
+    elif message.text == "🔍 Detect Fake Bot":
         # Redirects to Section 6 logic
-        bot.answer_callback_query(call.id, "EN: Opening Analysis... | KH: កំពុងបើកការវិភាគ...")
-        check_stats(call.message)
+        bot.send_message(message.chat.id, "🔍 EN: Opening Analysis... | KH: កំពុងបើកការវិភាគ...")
+        check_stats(message)
+
+    elif message.text == "📍 Set Channel":
+        # Redirects to Section 7 logic
+        set_channel_prompt(message)
 
 def process_poll_names(message):
     """Processes name list and creates polls with the '5th Person Overflow' rule"""
@@ -489,11 +572,13 @@ def process_poll_names(message):
 
     for index, group in enumerate(chunks, start=1):
         try:
+            # FIXED: is_anonymous MUST be True for channels. 
+            # FIXED: Capital 'T' in True (Python syntax).
             bot.send_poll(
                 chat_id=target_channel,
                 question=f"Poll {index}",
                 options=group,
-                is_anonymous=False 
+                is_anonymous=True 
             )
             time.sleep(1) # Respect rate limits
         except Exception as e:
