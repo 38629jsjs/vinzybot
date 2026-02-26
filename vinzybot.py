@@ -329,32 +329,53 @@ def check_stats(message):
 
 @bot.message_handler(commands=['start', 'menu'])
 def start(message):
+    """Displays the main interface with a persistent grid menu for all authorized users"""
     u_id = message.from_user.id
     
-    # Check if they are authorized
+    # 1. Authorization Check
     if not is_authorized(u_id):
-        # KH/EN Sale Message
-        msg = ("🚫 Access Denied!\n\n"
-               "EN: This bot is private. Please pay to gain access.\n"
-               "KH: គណនីរបស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ទេ។ សូមទិញសិទ្ធិប្រើប្រាស់ពីម្ចាស់ប៊ត។\n\n"
-               "Features: Polls, Anti-Raid, Scheduling, Stats.")
+        # KH/EN Sale Message for unauthorized users
+        msg = (
+            "🚫 **Access Denied!**\n\n"
+            "EN: This bot is private. Please pay to gain access.\n"
+            "KH: គណនីរបស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ទេ។ សូមទិញសិទ្ធិប្រើប្រាស់ពីម្ចាស់ប៊ត។\n\n"
+            "💎 Features: Auto-Polls, Anti-Boost Detection, Channel Audits, and Scheduling."
+        )
         bot.send_message(message.chat.id, msg)
         return
 
-    # Create the "4 Dots" Persistent Menu
+    # 2. Create the "4 Dots" Persistent Menu (ReplyKeyboardMarkup)
+    # row_width=2 creates a clean grid layout
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
+    # Define Core Buttons for ALL Authorized Users (Admin & Owner)
+    btn_poll = "📊 Create Poll"
+    btn_audit = "🔍 Audit Channel"
+    btn_broadcast = "📢 Broadcast"
+    btn_schedule = "📅 Schedule Info"
+    btn_set = "📍 Set Channel"
+    btn_detect = "🛡️ Poll Detection"
+    
+    # Add core buttons to the grid
+    markup.add(btn_poll, btn_audit)
+    markup.add(btn_broadcast, btn_schedule)
+    markup.add(btn_set, btn_detect)
+    
+    # 3. Add Owner-Only Management Buttons
     if u_id == SUPER_ADMIN_ID:
-        # Owner Buttons
-        markup.add("📊 Create Poll", "🔍 Detect Botting")
-        markup.add("📍 Set Channel", "📢 Broadcast")
         markup.add("➕ Add Admin", "➖ Remove Admin")
-        bot.send_message(message.chat.id, "Welcome Creator. Control the system using the buttons below or the 4-dot menu.", reply_markup=markup)
+        welcome_text = (
+            "👑 **OWNER CONTROL PANEL**\n\n"
+            "Welcome, Creator. Use the menu below to manage the bot and your connected channels."
+        )
     else:
-        # Authorized User Buttons
-        markup.add("📊 Create Poll", "🔍 Detect Botting")
-        markup.add("📍 Set Channel")
-        bot.send_message(message.chat.id, "Welcome Authorized User. Use the buttons below to begin.", reply_markup=markup)
+        welcome_text = (
+            "🛡️ **ADMIN CONTROL PANEL**\n\n"
+            "Welcome, Authorized User. You have full access to the management tools below."
+        )
+
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+
 
 @bot.message_handler(commands=['normal'])
 def remove_keyboard(message):
@@ -362,14 +383,16 @@ def remove_keyboard(message):
     markup = types.ReplyKeyboardRemove()
     bot.send_message(message.chat.id, "✅ Back to normal mode. Type /menu to show buttons again.", reply_markup=markup)
 
+
 # --- TEXT BUTTON ROUTING ---
-# This ensures clicking the "4-dot" menu buttons actually triggers the code
+# This ensures clicking the physical menu buttons actually triggers the code logic
 @bot.message_handler(func=lambda m: True)
 def handle_menu_text(message):
     u_id = message.from_user.id
     if not is_authorized(u_id):
         return
 
+    # 1. CREATE POLL BUTTON
     if message.text == "📊 Create Poll":
         prompt = (
             "📋 **AUTO POLL GENERATOR**\n\n"
@@ -379,26 +402,63 @@ def handle_menu_text(message):
         msg = bot.send_message(message.chat.id, prompt)
         bot.register_next_step_handler(msg, process_poll_names)
 
-    elif message.text == "🔍 Detect Botting":
+    # 2. AUDIT CHANNEL BUTTON
+    elif message.text == "🔍 Audit Channel":
+        # Redirects to the aggressive analysis logic in Section 6
+        bot.send_message(message.chat.id, "🔎 EN: Running Deep Audit... | KH: កំពុងពិនិត្យមើលទិន្នន័យ...")
         check_stats(message)
 
+    # 3. SET CHANNEL BUTTON
     elif message.text == "📍 Set Channel":
         set_channel_prompt(message)
 
-    elif message.text == "📢 Broadcast" and u_id == SUPER_ADMIN_ID:
+    # 4. BROADCAST BUTTON (Shared for Owner and Admins)
+    elif message.text == "📢 Broadcast":
         start_broadcast(message)
 
+    # 5. SCHEDULE INFO BUTTON (Newly added to logic)
+    elif message.text == "📅 Schedule Info":
+        # Logic to check current time and auto-post status
+        tz_kh = pytz.timezone('Asia/Phnom Penh')
+        now_kh = datetime.now(tz_kh).strftime("%H:%M:%S")
+        schedule_msg = (
+            "⏰ **POSTING SCHEDULE**\n\n"
+            f"Current Time (KH): {now_kh}\n"
+            "Auto-Post Time: 09:00 AM\n"
+            "Status: System Active ✅\n\n"
+            "EN: Your polls will be sent automatically at the time above.\n"
+            "KH: បញ្ជីឈ្មោះនឹងត្រូវបានបង្ហោះដោយស្វ័យប្រវត្តិនៅម៉ោងខាងលើ។"
+        )
+        bot.send_message(message.chat.id, schedule_msg)
+
+    # 6. POLL DETECTION BUTTON (Newly added to logic)
+    elif message.text == "🛡️ Poll Detection":
+        target = get_user_channel(u_id)
+        detect_msg = (
+            "🛡️ **ANTI-BOOST MONITOR**\n\n"
+            f"Targeting: {target if target else 'No Channel Set'}\n"
+            "Status: Scanning Active 🟢\n\n"
+            "Monitoring for:\n"
+            "• Abnormal Speed (>15 votes/3s)\n"
+            "• SMM Drip-feed patterns\n"
+            "• Fake Voter consistency\n\n"
+            "Alerts will be sent here if botting is detected."
+        )
+        bot.send_message(message.chat.id, detect_msg)
+
+    # 7. OWNER ONLY: ADD ADMIN
     elif message.text == "➕ Add Admin" and u_id == SUPER_ADMIN_ID:
         add_admin_prompt(message)
 
+    # 8. OWNER ONLY: REMOVE ADMIN
     elif message.text == "➖ Remove Admin" and u_id == SUPER_ADMIN_ID:
         remove_admin_prompt(message)
 
+
 # --- ADMIN MANAGEMENT LOGIC ---
 
-@bot.message_handler(func=lambda m: m.text == "Add Admin" and m.from_user.id == SUPER_ADMIN_ID)
 def add_admin_prompt(message):
-    msg = bot.reply_to(message, "Forward a message from the user or send their numerical Telegram ID:")
+    msg = bot.reply_to(message, "🆔 EN: Send the numerical Telegram ID for the new Admin:\nKH: សូមផ្ញើលេខ ID របស់ Admin ថ្មី:")
     bot.register_next_step_handler(msg, process_add_admin)
 
 def process_add_admin(message):
@@ -406,17 +466,17 @@ def process_add_admin(message):
         new_id = int(message.text)
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
+        # INSERT OR REPLACE handles the case where user might already be in DB
         c.execute('''INSERT INTO users (user_id, is_admin) VALUES(?, 1)
                      ON CONFLICT(user_id) DO UPDATE SET is_admin=1''', (new_id,))
         conn.commit()
         conn.close()
-        bot.send_message(message.chat.id, f"✅ User {new_id} added successfully.")
-    except Exception as e:
-        bot.send_message(message.chat.id, "❌ Invalid ID format. Please send numbers only.")
+        bot.send_message(message.chat.id, f"✅ Success! User {new_id} is now an Authorized Admin.")
+    except Exception:
+        bot.send_message(message.chat.id, "❌ Error: Please send a valid numerical ID only.")
 
-@bot.message_handler(func=lambda m: m.text == "Remove Admin" and m.from_user.id == SUPER_ADMIN_ID)
 def remove_admin_prompt(message):
-    msg = bot.reply_to(message, "Send the Telegram ID of the admin you want to remove:")
+    msg = bot.reply_to(message, "🆔 EN: Send the Telegram ID you wish to remove:\nKH: សូមផ្ញើលេខ ID ដែលអ្នកចង់លុប:")
     bot.register_next_step_handler(msg, process_remove_admin)
 
 def process_remove_admin(message):
@@ -424,94 +484,33 @@ def process_remove_admin(message):
         target_id = int(message.text)
         conn = sqlite3.connect('bot_data.db')
         c = conn.cursor()
+        # We set is_admin to 0 rather than deleting the row to keep channel settings preserved
         c.execute("UPDATE users SET is_admin=0 WHERE user_id=?", (target_id,))
         conn.commit()
         conn.close()
-        bot.send_message(message.chat.id, f"✅ User {target_id} removed from admin list.")
+        bot.send_message(message.chat.id, f"✅ Success! User {target_id} has been removed from Admin access.")
     except Exception:
-        bot.send_message(message.chat.id, "❌ Error: Could not find or remove user.")
-
-# --- CHANNEL SETTING LOGIC ---
-
-def set_channel_prompt(message):
-    msg = bot.reply_to(message, "EN: Send your Channel ID (e.g., @yourchannel)\nKH: សូមផ្ញើ ID Channel របស់អ្នក (ឧទាហរណ៍: @yourchannel):")
-    bot.register_next_step_handler(msg, process_set_channel)
-
-def process_set_channel(message):
-    try:
-        channel_id = message.text.strip()
-        if not (channel_id.startswith("@") or channel_id.startswith("-100")):
-            bot.reply_to(message, "❌ Invalid format. Must start with @ or -100")
-            return
-            
-        conn = sqlite3.connect('bot_data.db')
-        c = conn.cursor()
-        c.execute('''INSERT INTO users (user_id, target_channel) VALUES(?, ?)
-                     ON CONFLICT(user_id) DO UPDATE SET target_channel=excluded.target_channel''', 
-                  (message.from_user.id, channel_id))
-        conn.commit()
-        conn.close()
-        bot.reply_to(message, f"✅ Target Channel set to: {channel_id}")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Database error: {str(e)}")
-
-# --- POLL GENERATION LOGIC ---
-
-def process_poll_names(message):
-    user_id = message.from_user.id
-    target_channel = get_user_channel(user_id) 
-    
-    if not target_channel:
-        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន | EN: Set channel first.")
-        return
-
-    names = [n.strip() for n in message.text.split('\n') if n.strip()]
-    if not names:
-        bot.reply_to(message, "❌ KH: បញ្ជីឈ្មោះទទេរ! | EN: List is empty.")
-        return
-
-    # 4+1 Rule Grouping
-    chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
-    if len(chunks) > 1 and len(chunks[-1]) == 1:
-        leftover_person = chunks.pop() 
-        chunks[-1].extend(leftover_person) 
-
-    bot.send_message(message.chat.id, f"🚀 Creating {len(chunks)} polls in {target_channel}...")
-
-    for index, group in enumerate(chunks, start=1):
-        try:
-            bot.send_poll(
-                chat_id=target_channel,
-                question=f"Poll {index}",
-                options=group,
-                is_anonymous=True # FIXED: Must be True for channels
-            )
-            time.sleep(1)
-        except Exception as e:
-            bot.send_message(message.chat.id, f"❌ Error in Poll {index}: {str(e)}")
-
-    bot.send_message(message.chat.id, "✅ Done! All polls sent successfully.")
+        bot.send_message(message.chat.id, "❌ Error: Could not process removal. Check the ID.")
 # ==========================================
-# SECTION 8: FULL FEATURE MENU
+# SECTION 8: FULL FEATURE MENU & ROUTING
 # ==========================================
 
 @bot.message_handler(commands=['menu', 'start'])
 def show_main_menu(message):
-    """Displays the persistent 4-dot grid menu with all features"""
+    """Displays the persistent grid menu for all authorized users"""
     u_id = message.from_user.id
     if not is_authorized(u_id):
-        # KH/EN Sale Message for unauthorized users
-        msg = ("🚫 Access Denied!\n\n"
+        # Access Denied Message
+        msg = ("🚫 **Access Denied!**\n\n"
                "EN: This bot is private. Please pay to gain access.\n"
                "KH: គណនីរបស់អ្នកមិនមានសិទ្ធិប្រើប្រាស់ទេ។ សូមទិញសិទ្ធិប្រើប្រាស់ពីម្ចាស់ប៊ត។")
         bot.send_message(message.chat.id, msg)
         return
         
-    # Using ReplyKeyboardMarkup for the persistent "4-dot" grid menu
-    # resize_keyboard=True makes the buttons fit the screen neatly
+    # Standard grid layout (2 buttons per row)
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
-    # Core buttons available to both Owner and Admins
+    # 1. CORE BUTTONS (Visible to both Owner and Admin)
     btn1 = "📊 Create Poll"
     btn2 = "🔍 Audit Channel"
     btn3 = "📢 Broadcast"
@@ -519,12 +518,11 @@ def show_main_menu(message):
     btn5 = "📍 Set Channel"
     btn6 = "🛡️ Poll Detection"
     
-    # Building the grid layout
     markup.add(btn1, btn2)
     markup.add(btn3, btn4)
     markup.add(btn5, btn6)
     
-    # If the user is the Creator, add User Management buttons at the bottom
+    # 2. OWNER-ONLY MANAGEMENT BUTTONS
     if u_id == SUPER_ADMIN_ID:
         markup.add("➕ Add Admin", "➖ Remove Admin")
         menu_text = "👑 **OWNER CONTROL PANEL**\nSelect a tool from the menu below:"
@@ -534,30 +532,29 @@ def show_main_menu(message):
     bot.send_message(message.chat.id, menu_text, reply_markup=markup)
 
 # --- TEXT BUTTON ROUTER ---
-# This links the physical menu buttons to the specific code logic
+# This connects the text on the buttons to their respective functions
 @bot.message_handler(func=lambda m: True)
 def handle_all_buttons(message):
     u_id = message.from_user.id
     if not is_authorized(u_id): 
         return
 
-    # 1. CREATE POLL LOGIC
+    # 1. POLL CREATION
     if message.text == "📊 Create Poll":
         msg = bot.send_message(message.chat.id, "📋 EN: Send name list (one per line):\nKH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (មួយឈ្មោះក្នុងមួយបន្ទាត់):")
         bot.register_next_step_handler(msg, process_poll_names)
 
-    # 2. AUDIT CHANNEL LOGIC (From Section 6)
+    # 2. CHANNEL AUDIT (Anti-Bot Analysis)
     elif message.text == "🔍 Audit Channel":
         bot.send_message(message.chat.id, "🔎 EN: Running Channel Audit... | KH: កំពុងពិនិត្យ Channel...")
         check_stats(message)
 
-    # 3. BROADCAST LOGIC (Now enabled for Admins to their specific channel)
+    # 3. BROADCAST
     elif message.text == "📢 Broadcast":
         start_broadcast(message)
 
-    # 4. SCHEDULE INFO LOGIC
+    # 4. SCHEDULE INFO (Syncs with Cambodia Time)
     elif message.text == "📅 Schedule Info":
-        # Check current Cambodia Time
         tz_kh = pytz.timezone('Asia/Phnom Penh')
         now_kh = datetime.now(tz_kh).strftime("%H:%M:%S")
         bot.send_message(message.chat.id, 
@@ -565,32 +562,33 @@ def handle_all_buttons(message):
                          f"Current Time (KH): {now_kh}\n"
                          f"Auto-Post Time: 09:00 AM\n"
                          f"Status: Active ✅\n\n"
-                         f"Note: This system automatically syncs with Cambodia Time.")
+                         f"Note: Your scheduled posts are automatically synced.")
 
-    # 5. SET CHANNEL LOGIC
+    # 5. CHANNEL SETTINGS
     elif message.text == "📍 Set Channel":
         set_channel_prompt(message)
 
-    # 6. POLL DETECTION MONITOR (Visual UI for Section 3 logic)
+    # 6. ANTI-BOOST MONITOR (Live Status)
     elif message.text == "🛡️ Poll Detection":
         bot.send_message(message.chat.id, 
                          "🕵️ **Anti-Boost Monitor Active**\n\n"
-                         "The system is currently monitoring for:\n"
+                         "The system is currently scanning for:\n"
                          "• Abnormal voting speed\n"
                          "• SMM Drip-feed patterns\n"
                          "• Instant spikes (>15 votes/3s)\n\n"
-                         "If botting is detected, an alert will be sent to you automatically.")
+                         "Alerts will trigger automatically if botting occurs.")
 
     # 7. OWNER ONLY: USER MANAGEMENT
-    elif message.text == "➕ Add Admin" and u_id == SUPER_ADMIN_ID:
-        add_admin_prompt(message)
-    elif message.text == "➖ Remove Admin" and u_id == SUPER_ADMIN_ID:
-        remove_admin_prompt(message)
+    elif u_id == SUPER_ADMIN_ID:
+        if message.text == "➕ Add Admin":
+            add_admin_prompt(message)
+        elif message.text == "➖ Remove Admin":
+            remove_admin_prompt(message)
 
-# --- POLL PROCESSING FUNCTION ---
+# --- POLL PROCESSING LOGIC ---
 
 def process_poll_names(message):
-    """Processes name list and creates polls with the '5th Person Overflow' rule"""
+    """Processes the list and handles the 4+1 overflow rule"""
     user_id = message.from_user.id
     target_channel = get_user_channel(user_id) 
     
@@ -598,17 +596,17 @@ def process_poll_names(message):
         bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន (/set_channel) | EN: Set channel first.")
         return
 
-    # Clean and Parse the list
+    # Clean the input list
     names = [n.strip() for n in message.text.split('\n') if n.strip()]
     
     if not names:
         bot.reply_to(message, "❌ KH: បញ្ជីឈ្មោះទទេរ! | EN: List is empty.")
         return
 
-    # Smart Grouping Logic (4+1 Rule)
+    # Grouping names into chunks of 4
     chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
     
-    # If the last poll has only 1 person, merge them into the previous poll
+    # Overflow rule: Merge last person if they are alone
     if len(chunks) > 1 and len(chunks[-1]) == 1:
         leftover_person = chunks.pop() 
         chunks[-1].extend(leftover_person) 
@@ -617,14 +615,13 @@ def process_poll_names(message):
 
     for index, group in enumerate(chunks, start=1):
         try:
-            # IMPORTANT: is_anonymous MUST be True for channel polls (Telegram Rule)
             bot.send_poll(
                 chat_id=target_channel,
                 question=f"Poll {index}",
                 options=group,
                 is_anonymous=True 
             )
-            time.sleep(1) # Rate limit safety
+            time.sleep(1) # Safety delay
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Error in Poll {index}: {str(e)}")
 
@@ -634,7 +631,6 @@ def process_poll_names(message):
         f"KH: Poll ចំនួន {len(chunks)} ត្រូវបានផ្ញើទៅ {target_channel} រួចរាល់។"
     )
     bot.send_message(message.chat.id, final_msg)
-
 # ==========================================
 # FINAL EXECUTION BLOCK
 # ==========================================
