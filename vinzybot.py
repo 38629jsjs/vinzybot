@@ -365,112 +365,147 @@ def schedule_checker():
 threading.Thread(target=schedule_checker, daemon=True).start()
 
 # ==========================================
-# SECTION 6: BOT DETECTION (DATA & LOGS)
+# SECTION 6: ADVANCED DEEP-SCAN AUDIT
 # ==========================================
 
 @bot.message_handler(commands=['check_stats'])
 def check_stats(message):
-    """Analyzes channel health by comparing views, forwards, and member logs"""
+    """Deep audits up to 1000 messages to detect sophisticated fraud patterns"""
     user_id = message.from_user.id
     
-    # 1. Authorization Check (Uses Postgres-ready function from Section 2)
+    # 1. Authorization Check
     if not is_authorized(user_id):
         return
 
-    # 2. Get the target channel from Neon PostgreSQL
+    # 2. Get the target channel
     target = get_user_channel(user_id)
-    
     if not target:
         bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន / EN: Set channel first.")
         return
 
+    # Notify user that deep scan is starting
+    progress_msg = bot.send_message(message.chat.id, "🔍 **Starting Deep Scan...**\nEN: Analyzing 1,000 messages. Please wait.\nKH: កំពុងវិភាគសារចំនួន ១០០០។ សូមរង់ចាំ។")
+
     try:
-        # 3. ADMIN & MEMBER COUNT CHECK
+        # 3. Basic Info & Admin Verification
         chat = bot.get_chat(target)
         members_count = bot.get_chat_member_count(target)
-        
-        # Verify Bot Admin Permissions for Log Scanning
         bot_member = bot.get_chat_member(target, bot.get_me().id)
+        
         if bot_member.status != 'administrator':
             raise Exception("Missing Admin Status")
 
-        # 4. SCAN FOR DELETED MESSAGES (Last 48 Hours)
+        # 4. Scan Admin Logs for Deletions (Last 48 Hours)
         recent_deletes = 0
         try:
-            # Requires 'Can see admin logs' permission
             logs = bot.get_chat_admin_log(chat.id, types=['message_delete'])
             recent_deletes = len(logs)
         except Exception:
-            recent_deletes = -1 # Log access restricted or no logs found
+            recent_deletes = -1
 
-        # 5. FETCH DATA FROM LATEST POST (Pinned or Recent)
-        last_post_views = 0
-        last_post_forwards = 0
-        if chat.pinned_message:
-            # Views and forward_count are available for bots with Admin rights
-            last_post_views = getattr(chat.pinned_message, 'views', 0)
-            last_post_forwards = getattr(chat.pinned_message, 'forward_count', 0)
+        # 5. DEEP SCAN LOOP (1000 Message History)
+        total_views = 0
+        total_forwards = 0
+        posts_with_zero_forwards = 0
+        valid_post_count = 0
+        
+        offset_id = 0
+        batch_limit = 100
+        max_scan = 1000
+
+        while valid_post_count < max_scan:
+            batch = bot.get_chat_history(chat.id, limit=batch_limit, offset_id=offset_id)
+            if not batch:
+                break
+            
+            for post in batch:
+                if post.content_type in ['text', 'photo', 'video', 'document']:
+                    v = getattr(post, 'views', 0)
+                    f = getattr(post, 'forward_count', 0)
+                    
+                    total_views += v
+                    total_forwards += f
+                    valid_post_count += 1
+                    
+                    # BOUGHT VIEW TRAP: Organic posts almost always get shared.
+                    if v > 150 and f == 0:
+                        posts_with_zero_forwards += 1
+                
+                if valid_post_count >= max_scan:
+                    break
+            
+            # Update offset for next batch
+            offset_id = batch[-1].message_id
+            if len(batch) < batch_limit:
+                break 
+
+        # 6. CALCULATE TRUE AVERAGES
+        avg_views = total_views / valid_post_count if valid_post_count > 0 else 0
+        avg_forwards = total_forwards / valid_post_count if valid_post_count > 0 else 0
 
         # ==========================================
-        # DETECTION LOGIC (DATA-DRIVEN)
+        # ADVANCED DETECTION SCORING
         # ==========================================
         risk_score = 0
         reasons_en = []
         reasons_kh = []
 
-        # RULE A: The "Ghost" Subscriber Check (Low Interaction)
-        if members_count > 500 and last_post_views > 0:
-            view_ratio = (last_post_views / members_count) * 100
-            if view_ratio < 1: # Less than 1% engagement
-                risk_score += 40
-                reasons_en.append("Views are too low compared to total subscribers.")
-                reasons_kh.append("ចំនួនអ្នកមើលតិចជាងចំនួនអ្នកតាមដានច្រើនពេក (Ghost Subs)។")
+        # RULE A: Ghost Subscriber Check
+        if members_count > 500 and avg_views > 0:
+            view_ratio = (avg_views / members_count) * 100
+            if view_ratio < 1.0:
+                risk_score += 45
+                reasons_en.append(f"Suspiciously low engagement ({view_ratio:.1f}%).")
+                reasons_kh.append("ចំនួនអ្នកមើលតិចជាងអ្នកតាមដានខ្លាំងពេក (Ghost Subs)។")
 
-        # RULE B: The "Fake Forward" Rule
-        if last_post_forwards > last_post_views and last_post_views > 0:
-            risk_score += 50
-            reasons_en.append("Forwards are higher than views (Impossible/Fake Boost).")
-            reasons_kh.append("ចំនួន Forward ច្រើនជាងអ្នកមើល (ការបន្លំតួលេខ)។")
+        # RULE B: Bought Views Detection
+        if valid_post_count > 10:
+            fraud_ratio = posts_with_zero_forwards / valid_post_count
+            if fraud_ratio > 0.6:
+                risk_score += 70
+                reasons_en.append("Static view patterns found (Views with 0 shares). Likely Panel.")
+                reasons_kh.append("រកឃើញសញ្ញាទិញ Views (មានអ្នកមើលតែគ្មានអ្នក Share)។")
 
-        # RULE C: The "Empty Channel" Deletion Trap
-        if members_count > 100 and recent_deletes > 20:
+        # RULE C: Self-Forward / Ratio Manipulation
+        if avg_forwards > (avg_views * 0.8) and avg_views > 10:
+            risk_score += 55
+            reasons_en.append("Impossible Forward-to-View ratio. Possible manipulation.")
+            reasons_kh.append("ចំនួន Share ច្រើនមិនធម្មតាធៀបនឹងអ្នកមើល (បន្លំតួលេខ)។")
+
+        # RULE D: Mass Deletion (Log Check)
+        if recent_deletes > 25:
             risk_score += 60
-            reasons_en.append(f"Detected {recent_deletes} mass-deletions. Seller is hiding evidence.")
-            reasons_kh.append(f"រកឃើញការលុបសារចំនួន {recent_deletes}។ អ្នកលក់កំពុងលាក់បាំងភស្តុតាង។")
-
-        # RULE D: Low Engagement History
-        if members_count > 500 and recent_deletes == 0 and not chat.description:
-            risk_score += 30
-            reasons_en.append("No channel history/description but high sub count.")
-            reasons_kh.append("គ្មានប្រវត្តិរូប ឬការបង្ហោះសោះ តែមានអ្នកតាមដានច្រើន។")
+            reasons_en.append(f"Mass deletion ({recent_deletes}) detected. Seller hiding logs.")
+            reasons_kh.append(f"រកឃើញការលុបសារច្រើនខុសធម្មតា ({recent_deletes})។")
 
         # RATING GENERATION
-        if risk_score >= 50:
-            status = "🔴 DO NOT BUY / កុំទិញ"
-            rating = "HIGH RISK / ហានិភ័យខ្ពស់"
+        if risk_score >= 80:
+            status, rating = "🔴 DO NOT BUY / គ្រោះថ្នាក់ខ្លាំង", "SCAM / BOTTED"
+        elif risk_score >= 40:
+            status, rating = "🟡 CAUTION / ប្រុងប្រយ័ត្ន", "SUSPICIOUS / គួរឱ្យសង្ស័យ"
         else:
-            status = "🟢 SAFE / សុវត្ថិភាព"
-            rating = "CLEAN / ល្អ"
+            status, rating = "🟢 SAFE / សុវត្ថិភាព", "CLEAN / ធម្មតា"
 
-        # 6. FINAL REPORT CONSTRUCTION
-        report = (f"📊 **AUDIT REPORT: {target}**\n"
+        # 7. FINAL DEEP REPORT CONSTRUCTION
+        report = (f"🛡️ **DEEP AUDIT REPORT: {target}**\n"
                   f"━━━━━━━━━━━━━━━━━━\n"
-                  f"👥 Subs: {members_count}\n"
-                  f"🗑️ Recent Deletes: {recent_deletes if recent_deletes >= 0 else 'Unknown'}\n"
-                  f"⚖️ Status: {status}\n"
-                  f"⭐ Rating: {rating}\n\n"
-                  f"🇬🇧 **Analysis:** {'. '.join(reasons_en) if reasons_en else 'Engagement looks natural.'}\n"
-                  f"🇰🇭 **ការវិភាគ:** {'. '.join(reasons_kh) if reasons_kh else 'មើលទៅធម្មតា និងមានសុវត្ថិភាព។'}")
+                  f"📊 Posts Scanned: {valid_post_count}\n"
+                  f"👥 Total Subs: {members_count}\n"
+                  f"📈 True Avg Views: {int(avg_views)}\n"
+                  f"🔄 True Avg Forwards: {int(avg_forwards)}\n"
+                  f"🗑️ Recent Deletes: {recent_deletes if recent_deletes >= 0 else 'N/A'}\n"
+                  f"━━━━━━━━━━━━━━━━━━\n"
+                  f"⚖️ Verdict: {status}\n"
+                  f"⭐ Trust Score: {rating}\n\n"
+                  f"🇬🇧 **Analysis:** {'. '.join(reasons_en) if reasons_en else 'Patterns look organic across history.'}\n"
+                  f"🇰🇭 **ការវិភាគ:** {'. '.join(reasons_kh) if reasons_kh else 'មិនមានសញ្ញាបន្លំភ្នែកឡើយ។'}")
 
+        bot.delete_message(message.chat.id, progress_msg.message_id)
         bot.send_message(message.chat.id, report)
 
     except Exception as e:
-        # Detailed error handling for missing permissions
         print(f"Audit error: {e}")
-        msg = ("❌ **PERMISSIONS ERROR / ត្រូវការសិទ្ធិ Admin**\n\n"
-               "EN: Add me as Admin with 'View Admin Logs' and 'Delete Messages' perms.\n"
-               "KH: សូមដាក់ខ្ញុំជា Admin និងផ្ដល់សិទ្ធិ 'View Admin Logs' ដើម្បីវិភាគ។")
-        bot.reply_to(message, msg)
+        bot.reply_to(message, "❌ **AUDIT FAILED / ត្រូវការសិទ្ធិ Admin**\n\nEN: I need 'View Admin Logs' and 'Read Messages' perms.\nKH: ត្រូវការសិទ្ធិមើល Admin Logs និងអានសារដើម្បីវិភាគ។")
 # ==========================================
 # SECTION 7: USER INTERFACE & PERMISSIONS
 # ==========================================
@@ -481,6 +516,7 @@ def start(message):
     u_id = message.from_user.id
     
     # 1. Authorization Check (Uses Neon DB)
+    # This prevents unauthorized users from seeing the control panel
     if not is_authorized(u_id):
         remove_markup = types.ReplyKeyboardRemove()
         msg = (
@@ -491,11 +527,10 @@ def start(message):
         bot.send_message(message.chat.id, msg, reply_markup=remove_markup)
         return
 
-    # 2. Get User Language Preference
+    # 2. Get User Language Preference from DB
     lang = get_user_lang(u_id)
     
     # 3. Define Multilingual Button Labels
-    # FIXED: Added missing comma after 'lang' and resolved duplicate 'detect' key
     labels = {
         'poll': "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត",
         'audit': "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល",
@@ -507,14 +542,15 @@ def start(message):
         'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល"
     }
 
-    # 4. Create Grid Layout
+    # 4. Create Grid Layout (2 columns)
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(labels['poll'], labels['audit'])
     markup.add(labels['broadcast'], labels['schedule'])
     markup.add(labels['set'], labels['detect'])
     markup.add(labels['help'], labels['lang'])
     
-    # Add Owner-Only Management Buttons
+    # 5. Add Owner-Only Management Buttons
+    # These only appear for the SUPER_ADMIN_ID defined in your config
     if u_id == SUPER_ADMIN_ID:
         markup.add("➕ Add Admin", "➖ Remove Admin")
         welcome_text = "👑 **OWNER CONTROL PANEL**" if lang == 'en' else "👑 **ផ្ទាំងគ្រប់គ្រងម្ចាស់ប៊ត**"
@@ -524,30 +560,80 @@ def start(message):
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
 
 
-@bot.message_handler(commands=['normal'])
-def remove_keyboard(message):
-    """Removes the persistent menu buttons"""
-    markup = types.ReplyKeyboardRemove()
-    bot.send_message(message.chat.id, "✅ Keyboard hidden.", reply_markup=markup)
+# --- TEXT HANDLER FOR MENU BUTTONS (THE ROUTER) ---
+@bot.message_handler(func=lambda message: True)
+def handle_menu_clicks(message):
+    """Routes button text clicks to their respective functions by detecting the label"""
+    u_id = message.from_user.id
+    if not is_authorized(u_id): return
+    
+    text = message.text
+    lang = get_user_lang(u_id)
+
+    # Logic for: AUDIT CHANNEL
+    if text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
+        check_stats(message) # This triggers the Section 6 code we built
+    
+    # Logic for: SET CHANNEL
+    elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
+        set_channel_prompt(message) # Asks user for their @channelname
+        
+    # Logic for: LANGUAGE SETTINGS
+    elif text in ["🌐 Language", "🌐 ភាសា"]:
+        show_language_keyboard(message)
+        
+    # Logic for: OWNER ADMIN MANAGEMENT
+    elif text == "➕ Add Admin" and u_id == SUPER_ADMIN_ID:
+        add_admin_prompt(message)
+    elif text == "➖ Remove Admin" and u_id == SUPER_ADMIN_ID:
+        remove_admin_prompt(message)
+        
+    # Logic for: HELP
+    elif text in ["❓ Help", "❓ ជំនួយ"]:
+        help_text = (
+            "📖 **How to use Vinzy Bot:**\n\n"
+            "1. Use 'Set Channel' to link your Telegram channel.\n"
+            "2. Make the bot an Admin in your channel.\n"
+            "3. Use 'Audit Channel' to run a deep scan for fake views.\n"
+            "4. Use 'Broadcast' to send messages to all users."
+        ) if lang == 'en' else (
+            "📖 **របៀបប្រើប្រាស់ Vinzy Bot:**\n\n"
+            "1. ប្រើ 'កំណត់ឆានែល' ដើម្បីភ្ជាប់ឆានែលតេឡេក្រាមរបស់អ្នក។\n"
+            "2. ដាក់ប៊តជា Admin នៅក្នុងឆានែលរបស់អ្នក។\n"
+            "3. ប្រើ 'ពិនិត្យឆានែល' ដើម្បីស្វែងរក Views ក្លែងក្លាយ។"
+        )
+        bot.send_message(message.chat.id, help_text)
 
 
 # --- CALLBACK FOR LANGUAGE SWITCHING ---
+def show_language_keyboard(message):
+    """Sends inline buttons to choose language"""
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("English 🇬🇧", callback_data='set_lang_en'),
+        types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data='set_lang_kh')
+    )
+    bot.send_message(message.chat.id, "🌐 Select Language / សូមជ្រើសរើសភាសា:", reply_markup=markup)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith('set_lang_'))
 def callback_language(call):
+    """Updates language preference in the database and notifies the user"""
     new_lang = call.data.split('_')[2]
     set_user_lang(call.from_user.id, new_lang)
     
-    msg = "Language updated! Use /menu" if new_lang == 'en' else "ភាសាត្រូវបានផ្លាស់ប្តូរ! សូមប្រើ /menu"
+    msg = "✅ Language updated! Use /menu" if new_lang == 'en' else "✅ ភាសាត្រូវបានផ្លាស់ប្តូរ! សូមប្រើ /menu"
     bot.answer_callback_query(call.id, msg)
     bot.edit_message_text(msg, call.message.chat.id, call.message.message_id)
 
 
-# --- ADMIN MGMT FUNCTIONS (PostgreSQL Logic) ---
+# --- ADMIN MGMT FUNCTIONS (NEON POSTGRESQL) ---
 def add_admin_prompt(message):
+    """Step 1: Ask for the ID"""
     msg = bot.reply_to(message, "🆔 Send Telegram ID to add as Admin:")
     bot.register_next_step_handler(msg, process_add_admin)
 
 def process_add_admin(message):
+    """Step 2: Save ID to Database"""
     try:
         new_id = int(message.text)
         conn = db_pool.getconn()
@@ -560,23 +646,26 @@ def process_add_admin(message):
                 DO UPDATE SET is_admin = 1
             """, (new_id,))
             conn.commit()
-            bot.send_message(message.chat.id, f"✅ User {new_id} added to Admin list.")
+            bot.send_message(message.chat.id, f"✅ User {new_id} is now an authorized Admin.")
         except Exception as e:
-            bot.send_message(message.chat.id, f"❌ DB Error: {e}")
+            bot.send_message(message.chat.id, f"❌ Database Error: {e}")
         finally:
             db_pool.putconn(conn)
     except ValueError:
-        bot.send_message(message.chat.id, "❌ Invalid ID. Must be a number.")
+        bot.send_message(message.chat.id, "❌ Invalid ID. Please send a numerical ID only.")
 
 def remove_admin_prompt(message):
+    """Step 1: Ask for ID to remove"""
     msg = bot.reply_to(message, "🆔 Send ID to remove admin rights:")
     bot.register_next_step_handler(msg, process_remove_admin)
 
 def process_remove_admin(message):
+    """Step 2: Update Database to revoke rights"""
     try:
         target_id = int(message.text)
-        if target_id == SUPER_ADMIN_ID or target_id in PERMANENT_ADMINS:
-            bot.send_message(message.chat.id, "🚫 Cannot remove a Permanent Admin.")
+        # Security: Prevent removing the Super Admin (Owner)
+        if target_id == SUPER_ADMIN_ID:
+            bot.send_message(message.chat.id, "🚫 Security Error: You cannot remove the Owner.")
             return
 
         conn = db_pool.getconn()
@@ -586,7 +675,7 @@ def process_remove_admin(message):
             conn.commit()
             bot.send_message(message.chat.id, f"✅ Admin rights removed from {target_id}.")
         except Exception as e:
-            bot.send_message(message.chat.id, f"❌ DB Error: {e}")
+            bot.send_message(message.chat.id, f"❌ Database Error: {e}")
         finally:
             db_pool.putconn(conn)
     except ValueError:
@@ -632,9 +721,6 @@ def process_set_channel(message):
         if conn:
             db_pool.putconn(conn)
 
-# REMOVED: Duplicate get_user_channel function to prevent connection leaks.
-# The bot will now use the correct version defined in Section 4.
-
 # --- TEXT BUTTON ROUTER ---
 
 @bot.message_handler(func=lambda m: True)
@@ -665,7 +751,8 @@ def handle_all_buttons(message):
             if lang == 'en' else
             "📖 **របៀបប្រើប្រាស់:**\n\n"
             "1. **កំណត់ឆានែល**: ភ្ជាប់ទៅ Channel របស់អ្នកជាមុនសិន។\n"
-            "2. **បង្កើតការបោះឆ្នោត**: ផ្ញើឈ្មោះដើម្បីបង្កើត Poll។"
+            "2. **បង្កើតការបោះឆ្នោត**: ផ្ញើឈ្មោះដើម្បីបង្កើត Poll។\n"
+            "3. **ពិនិត្យ**: ស្វែងរកគណនីក្លែងក្លាយ។"
         )
         bot.send_message(message.chat.id, help_msg)
 
@@ -696,9 +783,15 @@ def handle_all_buttons(message):
     elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
         set_channel_prompt(message)
 
-    # 8. POLL DETECTION
-    elif text in ["🛡️ Poll Detection", "🛡️ ស្វែងរក Bot"]:
-        msg = "🛡️ Anti-Boost Active" if lang == 'en' else "🛡️ ការការពារការលួចបន្លំកំពុងដំណើរការ"
+    # 8. REPORT CHANNEL / POLL DETECTION (Fixed Routing)
+    elif text in ["🛡️ Report Channel", "🛡️ ស្វែងរក Bot", "🛡️ Poll Detection"]:
+        msg = (
+            "🛡️ **Anti-Boost System Active**\n\n"
+            "EN: I am currently monitoring the linked channel for fake votes, drip-feed patterns, and speed spikes."
+            if lang == 'en' else
+            "🛡️ **ប្រព័ន្ធការពារការបន្លំ**\n\n"
+            "KH: ខ្ញុំកំពុងតាមដានឆានែលដែលបានភ្ជាប់ ដើម្បីស្វែងរកការលួចបន្លំសន្លឹកឆ្នោត និងការប្រើប្រាស់ Bot ។"
+        )
         bot.send_message(message.chat.id, msg)
 
     # 9. OWNER ONLY: USER MANAGEMENT
