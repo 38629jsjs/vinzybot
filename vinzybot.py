@@ -504,6 +504,7 @@ def start(message):
         'detect': "🛡️ Poll Detection" if lang == 'en' else "🛡️ ស្វែងរក Bot",
         'help': "❓ Help" if lang == 'en' else "❓ ជំនួយ",
         'lang': "🌐 Language" if lang == 'en' else "🌐 ភាសា"
+        'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល",
     }
 
     # 4. Create Grid Layout
@@ -746,6 +747,93 @@ def process_poll_names(message):
             bot.send_message(message.chat.id, f"❌ Error in Poll {index}: {str(e)}")
 
     bot.send_message(message.chat.id, "✅ Process Complete!")
+# ==========================================
+# SECTION 9: MASS REPORT SIMULATOR (UI)
+# ==========================================
+import random
+
+def generate_fake_ip():
+    """Generates a random IP address for the console simulation"""
+    return f"{random.randint(45, 192)}.{random.randint(10, 254)}.{random.randint(0, 254)}.{random.randint(1, 254)}"
+
+@bot.message_handler(func=lambda m: m.text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"])
+def report_start(message):
+    """Starts the mass report simulation"""
+    u_id = message.from_user.id
+    if not is_authorized(u_id): return
+
+    lang = get_user_lang(u_id)
+    target = get_user_channel(u_id)
+
+    if not target:
+        bot.reply_to(message, "⚠️ Set channel first / សូមកំណត់ឆានែលសិន")
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    btn1 = types.InlineKeyboardButton("100 Reports", callback_data=f"run_rep_100")
+    btn2 = types.InlineKeyboardButton("500 Reports", callback_data=f"run_rep_500")
+    btn3 = types.InlineKeyboardButton("1000 Reports", callback_data=f"run_rep_1000")
+    markup.add(btn1, btn2, btn3)
+
+    msg = (f"🔥 **Mass Report System**\nTarget: `{target}`\n\n"
+           f"EN: Choose report intensity:\n"
+           f"KH: សូមជ្រើសរើសចំនួននៃការរាយការណ៍:")
+    bot.send_message(message.chat.id, msg, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('run_rep_'))
+def handle_report_exec(call):
+    amount = call.data.split('_')[2]
+    chat_id = call.message.chat.id
+    target = get_user_channel(call.from_user.id)
+    
+    # Initial Loading Message
+    status_msg = bot.edit_message_text(
+        f"⏳ **Initializing Proxy Servers...**\n[░░░░░░░░░░] 0%", 
+        chat_id, call.message.message_id
+    )
+
+    # Simulation Sequence with random IP logs
+    stages = [
+        {"p": 15, "t": "Connecting to KH-Mainframe..."},
+        {"p": 35, "t": "Routing through IPv6 Tunnel..."},
+        {"p": 55, "t": f"Broadcasting {amount} Signal Packets..."},
+        {"p": 85, "t": "Injecting Metadata to T&S API..."},
+        {"p": 100, "t": "✅ **Task Completed!**"}
+    ]
+
+    for stage in stages:
+        time.sleep(1.8) # Slightly longer for "realistic" delay
+        bar_filled = stage['p'] // 10
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        
+        # Generate 3 fake log lines for each stage
+        logs = "\n".join([f"📡 `[{generate_fake_ip()}]` -> `Sent`" for _ in range(3)])
+        
+        try:
+            bot.edit_message_text(
+                f"🛡️ **System Status: Active**\n"
+                f"Target: `{target}`\n"
+                f"Progress: [{bar}] {stage['p']}%\n\n"
+                f"🛰️ `{stage['t']}`\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"**Console Logs:**\n{logs}",
+                chat_id, status_msg.message_id
+            )
+        except:
+            pass
+
+    # Final Summary
+    time.sleep(1)
+    final_report = (
+        f"✅ **MASS REPORT FINISHED**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📥 Total: {amount} Reports Submited\n"
+        f"📡 Proxies Active: 128 Dedicated\n"
+        f"🛡️ Target Status: Flagged for Review\n\n"
+        f"EN: Success! Telegram's Trust & Safety bot has received the bulk data.\n"
+        f"KH: ជោគជ័យ! ប្រព័ន្ធសុវត្ថិភាពរបស់ Telegram បានទទួលទិន្នន័យរួចរាល់។"
+    )
+    bot.send_message(chat_id, final_report)
 # ==========================================
 # FINAL EXECUTION BLOCK
 # ==========================================
