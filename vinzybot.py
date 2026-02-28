@@ -495,16 +495,16 @@ def start(message):
     lang = get_user_lang(u_id)
     
     # 3. Define Multilingual Button Labels
+    # FIXED: Added missing comma after 'lang' and resolved duplicate 'detect' key
     labels = {
         'poll': "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត",
         'audit': "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល",
         'broadcast': "📢 Broadcast" if lang == 'en' else "📢 ផ្សព្វផ្សាយ",
         'schedule': "📅 Schedule Info" if lang == 'en' else "📅 ព័ត៌មានកាលវិភាគ",
         'set': "📍 Set Channel" if lang == 'en' else "📍 កំណត់ឆានែល",
-        'detect': "🛡️ Poll Detection" if lang == 'en' else "🛡️ ស្វែងរក Bot",
         'help': "❓ Help" if lang == 'en' else "❓ ជំនួយ",
-        'lang': "🌐 Language" if lang == 'en' else "🌐 ភាសា"
-        'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល",
+        'lang': "🌐 Language" if lang == 'en' else "🌐 ភាសា",
+        'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល"
     }
 
     # 4. Create Grid Layout
