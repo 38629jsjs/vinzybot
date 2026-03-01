@@ -13,13 +13,6 @@ from pyrogram import Client
 # ==========================================
 # SECTION 1: CONFIGURATION (RECOVERY MODE)
 # ==========================================
-import os
-import time
-import telebot
-import psycopg2
-from psycopg2 import pool
-from pyrogram import Client
-
 # 1. Fetch Environment Variables with Hardcoded Fallbacks
 # ------------------------------------------------------
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAEj5hYbo7a2TFZnfYWF7zf1NaCPx4fgyT0")
