@@ -11,21 +11,30 @@ import asyncio
 from pyrogram import Client
 
 # ==========================================
-# SECTION 1: CONFIGURATION
+# SECTION 1: CONFIGURATION (STABLE & COMBINED)
 # ==========================================
+import os
+import telebot
+import psycopg2
+from psycopg2 import pool
+from pyrogram import Client
 
-# 1. Fetch Environment Variables from Koyeb
-# ------------------------------------------
-BOT_TOKEN = os.getenv("8782687814:AAEj5hYbo7a2TFZnfYWF7zf1NaCPx4fgyT0")
+# 1. Fetch Environment Variables with Hardcoded Fallbacks
+# ------------------------------------------------------
+# Logic: os.getenv("VARIABLE_NAME", "BACKUP_VALUE")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAEj5hYbo7a2TFZnfYWF7zf1NaCPx4fgyT0")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
-DATABASE_URL = os.getenv("postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
 
-# --- USERBOT ENGINE CONFIG ---
+# Database Configuration
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require")
+
+# Userbot Engine Configuration
 API_ID = int(os.getenv("API_ID", "39060128"))
 API_HASH = os.getenv("API_HASH", "5855c5f9b3fe380c767e4e84caae3289")
-SESSION_STRING = "BQJUAqAALZSUOTTvHlWxyDBDQ0xl5g-BLRwNd_2d_AsZEV_mutWH67_iKN4eu4kvONgpEbHf_2XEsQ3j9MC4tzUKe4ceJ6n3K0yVr-XihvXXJPw8s1yvbWGwI0joYDWKsRrutWdICE3SIEhO-OoISC9K8jASDGi2Xilf2zLlkpSMwpG_77H5jUSQsYJVbExD6rWx8zIbEVOpC_fT6IOKKeUQbSoIKCZWx7IVZaoREvmqkYgycRyad4FRBmO4P7R2iYDxjbfYyAieVRFnO5Eh1hXzjwvhdxP7viCp2IRlMcK-0PVRUhpMniCj87YsrWnHkUd3uDyuYUctA0upOXyPKFLZpHrD-QAAAAIGuiofAA"
+SESSION_STRING = os.getenv("SESSION_STRING", "BQJUAqAALZSUOTTvHlWxyDBDQ0xl5g-BLRwNd_2d_AsZEV_mutWH67_iKN4eu4kvONgpEbHf_2XEsQ3j9MC4tzUKe4ceJ6n3K0yVr-XihvXXJPw8s1yvbWGwI0joYDWKsRrutWdICE3SIEhO-OoISC9K8jASDGi2Xilf2zLlkpSMwpG_77H5jUSQsYJVbExD6rWx8zIbEVOpC_fT6IOKKeUQbSoIKCZWx7IVZaoREvmqkYgycRyad4FRBmO4P7R2iYDxjbfYyAieVRFnO5Eh1hXzjwvhdxP7viCp2IRlMcK-0PVRUhpMniCj87YsrWnHkUd3uDyuYUctA0upOXyPKFLZpHrD-QAAAAIGuiofAA")
+
 # 2. Initialize Telegram Interfaces
-# ------------------------------------------
+# ------------------------------------------------------
 # Initialize @vinzystore_bot (The Frontend Bot)
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -39,13 +48,13 @@ userbot = Client(
 )
 
 # 3. Initialize Neon PostgreSQL Connection Pool
-# ------------------------------------------
+# ------------------------------------------------------
 try:
-    # We set min 1 and max 10 connections to handle multiple audits at once
+    # Setting min 1 and max 10 connections to handle multiple audits
     db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
-    print("✅ Successfully connected to Neon PostgreSQL")
+    print("\033[1;32m✅ Successfully connected to Neon PostgreSQL\033[0m")
 except Exception as e:
-    print(f"❌ Database connection failed: {e}")
+    print(f"\033[1;31m❌ Database connection failed: {e}\033[0m")
     # Critical for Koyeb: Exiting forces a container restart to fix network blips
     exit(1)
 # ==========================================
