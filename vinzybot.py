@@ -567,15 +567,15 @@ def check_stats(message):
     except Exception as e:
         bot.edit_message_text(f"❌ Error: `{e}`", message.chat.id, wait_msg.message_id)
 # ==========================================
-# SECTION 7: USER INTERFACE & PERMISSIONS
+# SECTION 7: USER INTERFACE & PERMISSIONS (COMBINED)
 # ==========================================
 
 @bot.message_handler(commands=['start', 'menu'])
 def start(message):
-    """បង្ហាញផ្ទាំងបញ្ជា (Menu) ទៅតាមភាសារបស់អ្នកប្រើប្រាស់"""
+    """Displays the control panel based on user language with security check"""
     u_id = message.from_user.id
     
-    # 1. ពិនិត្យសិទ្ធិប្រើប្រាស់ (Check Neon DB)
+    # 1. SECURITY CHECK (Neon DB & Hardcoded IDs)
     if not is_authorized(u_id):
         remove_markup = types.ReplyKeyboardRemove()
         msg = (
@@ -584,12 +584,12 @@ def start(message):
             "KH: គណនីរបស់អ្នកមិនទាន់មានសិទ្ធិប្រើប្រាស់ទេ។ សូមទាក់ទង @vinzystorezz ដើម្បីទិញសិទ្ធិ។"
         )
         bot.send_message(message.chat.id, msg, reply_markup=remove_markup, parse_mode="Markdown")
-        return
+        return # STOP execution here for unauthorized users
 
-    # 2. ទាញយកភាសាដែលអ្នកប្រើបានកំណត់
+    # 2. FETCH PREFERENCES
     lang = get_user_lang(u_id)
     
-    # 3. កំណត់ឈ្មោះប៊ូតុង (Multilingual Buttons)
+    # 3. CONFIGURE MULTILINGUAL LABELS
     labels = {
         'poll': "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត",
         'audit': "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល",
@@ -601,14 +601,14 @@ def start(message):
         'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល"
     }
 
-    # 4. រៀបចំ Layout ប៊ូតុង (Grid 2 columns)
+    # 4. ORGANIZE KEYBOARD LAYOUT
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(labels['poll'], labels['audit'])
     markup.add(labels['broadcast'], labels['schedule'])
     markup.add(labels['set'], labels['detect'])
     markup.add(labels['help'], labels['lang'])
     
-    # 5. បន្ថែមប៊ូតុងសម្រាប់ម្ចាស់ប៊ត (Owner Only)
+    # 5. ADMIN/OWNER SPECIFIC UI
     if u_id == SUPER_ADMIN_ID:
         markup.add("➕ Add Admin", "➖ Remove Admin")
         welcome_text = "👑 **OWNER CONTROL PANEL**" if lang == 'en' else "👑 **ផ្ទាំងគ្រប់គ្រងម្ចាស់ប៊ត**"
@@ -619,57 +619,56 @@ def start(message):
 
 
 # --- THE SMART ROUTER (ការចាត់ចែងបញ្ជា) ---
+
 @bot.message_handler(func=lambda message: True)
 def handle_menu_clicks(message):
+    """Routes button clicks and text inputs to their specific functions"""
     u_id = message.from_user.id
-    if not is_authorized(u_id): return
+    
+    # Security check for text-based interactions
+    if not is_authorized(u_id): 
+        return
     
     text = message.text
     lang = get_user_lang(u_id)
 
-    # 1. រកមើលការផ្ញើ Link ឬ Username (ស្មើនឹងការ Set Channel)
+    # 1. CHANNEL SETTING DETECTION (Link or @username)
     if text.startswith('@') or 't.me/' in text:
-        # process_set_channel ត្រូវតែមានក្នុង Section 2 ឬ 4
-        # បើមិនទាន់មាន សូមហៅ set_channel_logic នៅទីនេះ
         process_set_channel_logic(message) 
         return
 
-    # 2. បញ្ជាពិនិត្យឆានែល (Audit)
+    # 2. AUDIT COMMANDS
     if text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
-        check_stats(message) # ហៅមុខងារពី Section 6
+        check_stats(message) 
     
-    # 3. បញ្ជាកំណត់ឆានែល
+    # 3. MANUAL SET CHANNEL
     elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
-        msg = bot.reply_to(message, "📍 **EN:** Send channel @username\n📍 **KH:** សូមផ្ញើឈ្មោះឆានែល (ឧទាហរណ៍៖ @username)")
+        msg = bot.reply_to(message, "📍 **EN:** Send channel @username\n📍 **KH:** សូមផ្ញើឈ្មោះឆានែល (ឧទាករណ៍៖ @username)")
         bot.register_next_step_handler(msg, process_set_channel_logic)
 
-    # 4. រាយការណ៍ឆានែល (Fraud Report)
+    # 4. REPORTING SYSTEM
     elif text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"]:
-        report_msg = (
-            "🛡️ **FRAUD REPORTING SYSTEM**\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "EN: To report fraud, contact @vinzystorezz directly.\n"
-            "KH: ដើម្បីរាយការណ៍អំពីការបោកប្រាស់ សូមទាក់ទង @vinzystorezz ដោយផ្ទាល់។"
-        )
-        bot.reply_to(message, report_msg)
+        # Note: This calls the Section 9 simulator logic you added
+        report_start(message) 
         
-    # 5. ប្តូរភាសា
+    # 5. LANGUAGE SETTINGS
     elif text in ["🌐 Language", "🌐 ភាសា"]:
         show_language_keyboard(message)
         
-    # 6. បញ្ជាសម្រាប់ Owner
+    # 6. OWNER PRIVILEGES
     elif text == "➕ Add Admin" and u_id == SUPER_ADMIN_ID:
         add_admin_prompt(message)
     elif text == "➖ Remove Admin" and u_id == SUPER_ADMIN_ID:
         remove_admin_prompt(message)
 
-    # 7. ជំនួយ (Help)
+    # 7. HELP SYSTEM
     elif text in ["❓ Help", "❓ ជំនួយ"]:
+        # Ensure you have a send_help function defined
         send_help(message, lang)
 
-    # 8. បញ្ជាផ្សេងៗដែលមិនស្គាល់
+    # 8. BROADCAST SYSTEM
     elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
-        start_broadcast(message) # ហៅមុខងារពី Section 4
+        start_broadcast(message)
 
 # --- SUPPORTING FUNCTIONS ---
 
@@ -713,10 +712,9 @@ def process_add_admin(message):
     except:
         bot.send_message(message.chat.id, "❌ Invalid ID. Please send numbers only.")
 
-# --- Logic សម្រាប់ Set Channel ---
 def process_set_channel_logic(message):
     target = message.text.strip()
-    if not target.startswith('@'):
+    if not target.startswith('@') and not target.startswith('-100'):
         target = f"@{target}"
     
     conn = db_pool.getconn()
@@ -981,16 +979,15 @@ def execute_report_simulation(call):
 # FINAL EXECUTION BLOCK
 # ==========================================
 
-# Use this to initialize the database tables if they don't exist
-try:
-    init_db()
-    print("✅ Neon Database Initialized.")
-except Exception as e:
-    print(f"⚠️ DB Init Note: {e}")
-
 if __name__ == "__main__":
-    print("--- BOT IS STARTING ---")
-    print(f"Owner ID: {SUPER_ADMIN_ID}")
+    # \033[1;32m = Bold Green
+    # \033[0m = Reset color to normal
+    print("\033[1;32m🚀 Vinzy Audit Bot is starting...\033[0m")
     
-    # Use infinity_polling to ensure the bot restarts on minor errors
-    bot.infinity_polling(timeout=10, long_polling_timeout=5)
+    while True:
+        try:
+            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        except Exception as e:
+            # \033[1;31m = Bold Red
+            print(f"\033[1;31m⚠️ Polling Error: {e}\033[0m")
+            time.sleep(5)
