@@ -11,9 +11,10 @@ import asyncio
 from pyrogram import Client
 
 # ==========================================
-# SECTION 1: CONFIGURATION (STABLE & COMBINED)
+# SECTION 1: CONFIGURATION (RECOVERY MODE)
 # ==========================================
 import os
+import time
 import telebot
 import psycopg2
 from psycopg2 import pool
@@ -21,24 +22,18 @@ from pyrogram import Client
 
 # 1. Fetch Environment Variables with Hardcoded Fallbacks
 # ------------------------------------------------------
-# Logic: os.getenv("VARIABLE_NAME", "BACKUP_VALUE")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAEj5hYbo7a2TFZnfYWF7zf1NaCPx4fgyT0")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
-
-# Database Configuration
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require")
 
-# Userbot Engine Configuration
 API_ID = int(os.getenv("API_ID", "39060128"))
 API_HASH = os.getenv("API_HASH", "5855c5f9b3fe380c767e4e84caae3289")
 SESSION_STRING = os.getenv("SESSION_STRING", "BQJUAqAALZSUOTTvHlWxyDBDQ0xl5g-BLRwNd_2d_AsZEV_mutWH67_iKN4eu4kvONgpEbHf_2XEsQ3j9MC4tzUKe4ceJ6n3K0yVr-XihvXXJPw8s1yvbWGwI0joYDWKsRrutWdICE3SIEhO-OoISC9K8jASDGi2Xilf2zLlkpSMwpG_77H5jUSQsYJVbExD6rWx8zIbEVOpC_fT6IOKKeUQbSoIKCZWx7IVZaoREvmqkYgycRyad4FRBmO4P7R2iYDxjbfYyAieVRFnO5Eh1hXzjwvhdxP7viCp2IRlMcK-0PVRUhpMniCj87YsrWnHkUd3uDyuYUctA0upOXyPKFLZpHrD-QAAAAIGuiofAA")
 
 # 2. Initialize Telegram Interfaces
 # ------------------------------------------------------
-# Initialize @vinzystore_bot (The Frontend Bot)
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Initialize @vinzystorezz (The Audit Engine Userbot)
 userbot = Client(
     "vinzy_engine", 
     api_id=API_ID, 
@@ -47,16 +42,41 @@ userbot = Client(
     in_memory=True
 )
 
-# 3. Initialize Neon PostgreSQL Connection Pool
+# 3. Initialize Neon PostgreSQL with Keep-Alives
 # ------------------------------------------------------
-try:
-    # Setting min 1 and max 10 connections to handle multiple audits
-    db_pool = psycopg2.pool.SimpleConnectionPool(1, 10, DATABASE_URL)
-    print("\033[1;32m✅ Successfully connected to Neon PostgreSQL\033[0m")
-except Exception as e:
-    print(f"\033[1;31m❌ Database connection failed: {e}\033[0m")
-    # Critical for Koyeb: Exiting forces a container restart to fix network blips
-    exit(1)
+def init_pool():
+    try:
+        # keepalives help prevent the "SSL connection closed unexpectedly" error
+        return psycopg2.pool.SimpleConnectionPool(
+            1, 20, DATABASE_URL,
+            keepalives=1, keepalives_idle=30, 
+            keepalives_interval=10, keepalives_count=5
+        )
+    except Exception as e:
+        print(f"\033[1;31m❌ Initial DB Connection failed: {e}\033[0m")
+        exit(1)
+
+db_pool = init_pool()
+print("\033[1;32m✅ Successfully connected to Neon PostgreSQL\033[0m")
+
+def get_db_conn():
+    """Safety helper to get a working DB connection"""
+    global db_pool
+    try:
+        conn = db_pool.getconn()
+        # Verify the connection is actually alive
+        with conn.cursor() as cur:
+            cur.execute('SELECT 1')
+        return conn
+    except Exception:
+        print("\033[1;33m🔄 DB Connection lost. Repairing pool...\033[0m")
+        db_pool = init_pool()
+        return db_pool.getconn()
+
+def release_db_conn(conn):
+    """Safety helper to return connection to pool"""
+    if conn:
+        db_pool.putconn(conn)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (Admins/Users/Privacy)
 # ==========================================
@@ -985,18 +1005,23 @@ def execute_report_simulation(call):
     bot.send_message(chat_id, final_report, parse_mode="Markdown")
 
 # ==========================================
-# FINAL EXECUTION BLOCK
+# FINAL EXECUTION BLOCK (STABLE POLLING)
 # ==========================================
 
 if __name__ == "__main__":
-    # \033[1;32m = Bold Green
-    # \033[0m = Reset color to normal
     print("\033[1;32m🚀 Vinzy Audit Bot is starting...\033[0m")
     
+    # Ensure Userbot starts without crashing the main script
+    try:
+        userbot.start()
+        print("\033[1;34m🤖 Userbot Engine Active\033[0m")
+    except Exception as e:
+        print(f"\033[1;33m⚠️ Userbot warning: {e}\033[0m")
+
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=30)
+            # increased timeout to 90 to prevent the 'Read Timeout' error
+            bot.infinity_polling(timeout=90, long_polling_timeout=20)
         except Exception as e:
-            # \033[1;31m = Bold Red
-            print(f"\033[1;31m⚠️ Polling Error: {e}\033[0m")
-            time.sleep(5)
+            print(f"\033[1;31m⚠️ Polling Error at {time.strftime('%H:%M:%S')}: {e}\033[0m")
+            time.sleep(10) # Wait 10 seconds before trying again
