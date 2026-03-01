@@ -473,27 +473,41 @@ threading.Thread(target=schedule_checker, daemon=True).start()
 # ==========================================
 # SECTION 6: ADVANCED DEEP-SCAN (USERBOT ENGINE)
 # ==========================================
+import asyncio
+import threading
 
 async def run_userbot_audit(target_username):
     """
-    ប្រើប្រាស់ @vinzystorezz Userbot ដើម្បីវិភាគទិន្នន័យ Views និង Shares ជាក់ស្តែង
+    Uses @vinzystorezz Userbot to analyze real Views and Shares.
+    Includes auto-join logic to prevent 'Chat Not Found' errors.
     """
+    # Ensure engine is running
     if not userbot.is_connected:
-        await userbot.start()
-    
+        try:
+            await userbot.start()
+        except Exception as e:
+            print(f"Engine Start Error: {e}")
+
     try:
-        # សម្អាតឈ្មោះ Username
         clean_target = target_username if target_username.startswith("@") else f"@{target_username}"
         
-        # ទាញយកព័ត៌មាន Chat
-        chat = await userbot.get_chat(clean_target)
-        
+        # --- AUTO-JOIN LOGIC ---
+        try:
+            chat = await userbot.get_chat(clean_target)
+        except Exception:
+            # If engine can't see the chat, try joining it
+            try:
+                chat = await userbot.join_chat(clean_target)
+            except Exception as e:
+                print(f"Join Error: {e}")
+                return None
+
         total_views = 0
         total_shares = 0
         post_count = 0
         suspicious_posts = 0
 
-        # ស្កេន 50 posts ចុងក្រោយដើម្បីរកមើលភាពមិនប្រក្រតី
+        # Scan last 50 posts
         async for msg in userbot.get_chat_history(chat.id, limit=50):
             if msg.views:
                 v = msg.views
@@ -502,21 +516,24 @@ async def run_userbot_audit(target_username):
                 total_shares += s
                 post_count += 1
                 
-                # បើ Views ច្រើន (លើស 100) តែ Shares = 0 គឺជាសញ្ញា Bot Views
+                # Bot detection logic: High views + Zero shares
                 if v > 100 and s == 0:
                     suspicious_posts += 1
             
-            # Delay បន្តិចដើម្បីការពារសុវត្ថិភាព Userbot
-            await asyncio.sleep(0.1) 
+            await asyncio.sleep(0.05) # Prevent flood wait
 
-        if post_count == 0: return None
+        if post_count == 0: 
+            return None
 
         avg_views = total_views / post_count
-        engagement = (avg_views / chat.members_count) * 100 if chat.members_count > 0 else 0
+        # Handle chat.members_count if it's None (for some channels)
+        members = chat.members_count or 1
+        
+        engagement = (avg_views / members) * 100
         share_rate = (total_shares / total_views) * 100 if total_views > 0 else 0
 
         return {
-            "subs": chat.members_count,
+            "subs": members,
             "avg_v": int(avg_views),
             "engagement": engagement,
             "share_rate": share_rate,
@@ -527,44 +544,26 @@ async def run_userbot_audit(target_username):
         print(f"❌ Userbot Audit Error: {e}")
         return None
 
-@bot.message_handler(commands=['check_stats'])
-def check_stats(message):
-    """Deep audits channel data using Userbot Engine"""
-    user_id = message.from_user.id
-    
-    # 1. ពិនិត្យសិទ្ធិ
-    if not is_authorized(user_id):
-        return
-
-    # 2. ទាញយកឆានែលគោលដៅ
-    target = get_user_channel(user_id)
-    if not target:
-        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន (/set) | EN: Set channel first.")
-        return
-
-    # បង្ហាញដំណើរការវិភាគ
-    wait_msg = bot.send_message(
-        message.chat.id, 
-        "🔍 **Starting Deep Scan...**\n"
-        "🕵️ Engine: `@vinzystorezz` is reading real-time history.\n"
-        "⏳ KH: កំពុងវិភាគទិន្នន័យជាក់ស្តែង។ សូមរង់ចាំ..."
-    )
-
+def audit_thread_worker(message, wait_msg, target):
+    """Background worker to run async code inside a synchronous thread"""
     try:
-        # ដំណើរការវិភាគតាមរយៈ Userbot (Async)
+        # Create a new event loop for this specific scan
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         data = loop.run_until_complete(run_userbot_audit(target))
+        loop.close()
 
         if not data:
-            bot.edit_message_text("❌ Audit failed! Is the channel public?", message.chat.id, wait_msg.message_id)
+            bot.edit_message_text(
+                "❌ **Audit Failed!**\n\nPossible reasons:\n1. Channel is Private\n2. Userbot is Banned\n3. Username is wrong", 
+                message.chat.id, wait_msg.message_id
+            )
             return
 
-        # ៣. ការវិភាគលទ្ធផល (Decision Logic)
+        # --- Decision Logic ---
         verdict = "🟢 SAFE / សុវត្ថិភាព"
         status_color = "CLEAN"
         
-        # បើការចូលរួម (Engagement) ទាប ឬការ Share ទាបខ្លាំង គឺជាឆានែលបន្លំ
         if data['engagement'] < 0.5 or data['share_rate'] < 0.01:
             verdict = "🔴 HIGH RISK / គ្រោះថ្នាក់"
             status_color = "BOTTED / FAKE VIEWS"
@@ -572,7 +571,7 @@ def check_stats(message):
             verdict = "🟡 CAUTION / ប្រុងប្រយ័ត្ន"
             status_color = "INCONSISTENT ACTIVITY"
 
-        # ៤. បង្កើតរបាយការណ៍
+        # --- Final Report ---
         report = (f"🛡️ **DEEP AUDIT: {data['title']}**\n"
                   f"━━━━━━━━━━━━━━━━━━\n"
                   f"👥 Subs: `{data['subs']:,}`\n"
@@ -587,7 +586,30 @@ def check_stats(message):
         bot.edit_message_text(report, message.chat.id, wait_msg.message_id, parse_mode="Markdown")
 
     except Exception as e:
-        bot.edit_message_text(f"❌ Error: `{e}`", message.chat.id, wait_msg.message_id)
+        bot.edit_message_text(f"❌ System Error: `{e}`", message.chat.id, wait_msg.message_id)
+
+@bot.message_handler(func=lambda m: m.text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"])
+def check_stats(message):
+    """Main entry point for auditing"""
+    u_id = message.from_user.id
+    if not is_authorized(u_id): return
+
+    # Get target from DB (Use your get_user_channel function)
+    target = get_user_channel(u_id)
+    if not target:
+        bot.reply_to(message, "⚠️ KH: សូមកំណត់ Channel ជាមុនសិន (/set)\nEN: Set channel first.")
+        return
+
+    wait_msg = bot.send_message(
+        message.chat.id, 
+        "🔍 **Starting Deep Scan...**\n"
+        "🕵️ Engine: `@vinzystorezz` is joining and reading history.\n"
+        "⏳ Please wait roughly 10-15 seconds..."
+    )
+
+    # Start the scan in a background thread so the main bot doesn't time out
+    t = threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target))
+    t.start()
 # ==========================================
 # SECTION 7: USER INTERFACE & PERMISSIONS (COMBINED)
 # ==========================================
