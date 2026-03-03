@@ -391,112 +391,118 @@ import threading
 import time
 from datetime import datetime
 
-def calculate_grade_a_score(members, verified_id, can_story, chat):
+def calculate_grade_a_score(members, total_posts, can_story):
     """
-    Grade A Logic Engine: Zero Randomness.
-    Uses structural integrity heuristics to detect inorganic growth.
+    Zero-Randomness Logic Engine:
+    Uses mathematical thresholds to identify structural impossibilities.
     """
     score = 100
     findings_kh = []
 
-    # --- 1. GROWTH TO CONTENT RATIO (The 'Ghost' Check) ---
-    # Real channels have a history of posts. 
-    # If posts (verified_id) are less than 1% of the member count, it's a shell.
+    # --- RULE 1: THE EMPTY GIANT (Hard Penalty) ---
+    # If a channel has 2,000+ members but the total post history (ID) is under 30.
+    # This is a mathematical certainty of a fake shell.
+    if members > 2000 and total_posts < 30:
+        score -= 75
+        findings_kh.append("🚩 **Fake Shell:** ឆានែលធំខ្លាំង តែគ្មានប្រវត្តិអត្ថបទសោះ (Fake Giant)")
+    
+    # --- RULE 2: GROWTH TO CONTENT RATIO ---
+    # Real channels usually have 1 post for every 20-50 members.
+    # If a channel has 10,000 members and only 100 posts, it is 'Hollow'.
     if members > 500:
-        integrity_ratio = (verified_id / members) * 100
-        if integrity_ratio < 0.5: # Extreme disproportion
-            score -= 50
-            findings_kh.append("🚩 **Ghost Shell:** ចំនួនសារ និងសមាជិកមិនសមាមាត្រគ្នា (សញ្ញា Bot ខ្លាំង)")
-        elif integrity_ratio < 2.0: # Suspiciously low activity
-            score -= 20
-            findings_kh.append("⚠️ **Low Density:** សកម្មភាពក្នុងឆានែលមានកម្រិតទាប")
+        ratio = total_posts / members
+        if ratio < 0.02: # Less than 2 posts per 100 members
+            score -= 40
+            findings_kh.append("⚠️ **Hollow Channel:** ចំនួនអត្ថបទតិចពេក បើធៀបនឹងសមាជិក")
 
-    # --- 2. PREMIUM AUDIENCE VERIFICATION ---
-    # Bots cannot 'Boost' a channel. If a 2k+ member channel has 0 boosts, 
-    # it lacks a human premium audience.
-    if members > 2000 and not can_story:
-        score -= 30
-        findings_kh.append("🚫 **Zero Boosts:** គ្មានអ្នកប្រើ Premium (ទំនងជាសមាជិក Bot ទាំងអស់)")
-
-    # --- 3. SMM PANEL SIGNATURE ---
-    # Humans join randomly (1243, 1244...). Bots are added in round numbers.
-    if members >= 500 and (members % 500 == 0 or members % 1000 == 0):
+    # --- RULE 3: SMM PANEL SIGNATURE ---
+    # SMM Panels deliver in round blocks. Organic growth is messy (e.g., 1043).
+    # We flag exact round numbers common in panel purchases.
+    round_targets = [500, 1000, 2000, 5000, 10000, 20000, 50000]
+    if members in round_targets:
         score -= 15
-        findings_kh.append("🕵️ **SMM Pattern:** ចំនួនសមាជិកឡើងគត់ពេក (Matches SMM Panel)")
+        findings_kh.append("🕵️ **SMM Pattern:** ចំនួនសមាជិកឡើងគត់ពេក (Matches SMM Blocks)")
 
-    # --- 4. CHANNEL MATURITY ---
-    # High sub count + Low Message ID = A "Pumped" channel.
-    if members > 10000 and verified_id < 300:
-        score -= 25
-        findings_kh.append("🚀 **Instant Spike:** ឆានែលថ្មីពេក តែមានអ្នកតាមដានមហិមា")
+    # --- RULE 4: PREMIUM PROOF ---
+    # Human audiences include Premium users. Large channels without boosts are suspicious.
+    if members > 3000 and not can_story:
+        score -= 10
+        findings_kh.append("🚫 **No Premium:** គ្មានអ្នកប្រើ Premium Boost (សញ្ញា Bot ច្រើន)")
+
+    # --- SMALL CHANNEL PROTECTION ---
+    # Do not penalize new/small channels (under 150 members).
+    if members < 150:
+        return 100, ["✅ New Channel: ទិន្នន័យនៅតូច មិនទាន់អាចវិភាគបាន។"]
 
     return max(5, score), findings_kh
 
 def audit_thread_worker(message, wait_msg, target):
+    """
+    Worker thread that extracts raw MTProto metadata for analysis.
+    """
     chat_id = message.chat.id
     msg_id = wait_msg.message_id
     
     try:
-        # STEP 1: MTPROTO CONNECTION
-        bot.edit_message_text("🔍 `[██░░░░░░░░] 20%` \n📡 **EN:** Fetching MTProto Metadata...\n**KH:** កំពុងទាញយកទិន្នន័យពិត...", chat_id, msg_id, parse_mode="Markdown")
+        bot.edit_message_text("🔍 `[██░░░░░░░░] 20%` \n📡 **Extracting MTProto Metadata...**", chat_id, msg_id)
         
-        if str(target).startswith("-100"): clean_target = int(target)
-        else: clean_target = target if str(target).startswith("@") else f"@{target}"
+        # Format target ID or Username
+        if str(target).startswith("-100"): 
+            clean_target = int(target)
+        else: 
+            clean_target = target if str(target).startswith("@") else f"@{target}"
         
-        # --- RAW DATA MINING ---
+        # Fetch RAW Data
         chat = bot.get_chat(clean_target)
         members = bot.get_chat_member_count(chat.id)
         
-        # Verify Story/Boost Status (The ultimate human-check)
+        # THE ANCHOR: Generate a transient ID to find the current sequence number
+        temp_msg = bot.send_message(chat.id, "🛠️ `Structural Scan in progress...`")
+        total_posts = temp_msg.message_id 
+        bot.delete_message(chat.id, total_posts)
+
+        # Check Boost Status (Requires Admin)
         try:
-            bot_member = bot.get_chat_member(chat.id, bot.get_me().id)
-            can_story = getattr(bot_member, 'can_post_stories', False)
+            can_story = getattr(chat, 'can_set_sticker_set', False)
         except:
             can_story = False
 
-        # ANCHOR ID: We use the Pinned Message ID as a verified 'Real' activity marker.
-        # If no pin exists, the channel is penalized for having no structural anchor.
-        verified_id = chat.pinned_message.message_id if chat.pinned_message else 1
-
-        # STEP 2: LOGIC ENGINE
-        bot.edit_message_text("🔍 `[██████░░░░] 60%` \n🧬 **EN:** Running Integrity Logic...\n**KH:** កំពុងគណនាពិន្ទុសុវត្ថិភាព...", chat_id, msg_id, parse_mode="Markdown")
-        time.sleep(1)
+        bot.edit_message_text("🔍 `[██████░░░░] 60%` \n🧬 **Analyzing Channel Integrity...**", chat_id, msg_id)
         
-        trust_score, f_kh = calculate_grade_a_score(members, verified_id, can_story, chat)
+        # Execute Scoring
+        trust_score, f_kh = calculate_grade_a_score(members, total_posts, can_story)
 
-        # STEP 3: FINAL VERDICT
-        if trust_score < 45:
+        # Define Verdict
+        if trust_score < 40:
             verdict, status = "🔴 **HIGH RISK**", "BOTTED / FAKE"
-        elif trust_score < 75:
-            verdict, status = "🟡 **CAUTION**", "INCONSISTENT"
+        elif trust_score < 80:
+            verdict, status = "🟡 **CAUTION**", "SUSPICIOUS"
         else:
             verdict, status = "🟢 **SAFE**", "ORGANIC"
 
         finding_str = "\n".join(f_kh) if f_kh else "✅ រកមិនឃើញភាពមិនប្រក្រតីនៃទិន្នន័យទេ។"
 
-        # 
-
+        # Final Report UI
         report = (
             f"📊 **VINZY PRO-GRADE AUDIT REPORT**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📢 **Channel:** `{chat.title}`\n"
             f"👥 **Members:** `{members:,}`\n"
-            f"📈 **Verified ID Anchor:** `{verified_id}`\n"
-            f"🎥 **Boost Capacity:** `{'✅ Verified' if can_story else '❌ None Detected'}`\n"
+            f"📈 **Post History ID:** `{total_posts}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⚖️ **Verdict:** {verdict}\n"
             f"⭐ **Trust Score:** `{trust_score}%` / 100%\n"
             f"📍 **Status:** `{status}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔍 **Expert Findings (KH):**\n_{finding_str}_\n"
+            f"🔍 **Expert Findings:**\n_{finding_str}_\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 **Scan Date:** `{datetime.now().strftime('%Y-%m-%d %H:%M')}`\n"
-            f"ℹ️ _Note: Verified via structural MTProto analysis._"
+            f"📅 `Scan: {datetime.now().strftime('%Y-%m-%d %H:%M')}`\n"
+            f"🛡️ _Verified via Structural Sequence Analysis._"
         )
         bot.edit_message_text(report, chat_id, msg_id, parse_mode="Markdown")
 
     except Exception as e:
-        bot.edit_message_text(f"❌ **System Error:** Ensure Bot is Admin.\n`{str(e)}`", chat_id, msg_id)
+        bot.edit_message_text(f"❌ **Audit Error:** Ensure Bot is Admin in `{target}`.\n`{str(e)}`", chat_id, msg_id)
 # ==========================================
 # SECTION 7: MASTER UI & ROUTING (PRO GRADE)
 # ==========================================
