@@ -651,34 +651,62 @@ def master_router(message):
             msg = bot.reply_to(message, "🆔 **Action:** Send User ID to revoke Admin access:")
             bot.register_next_step_handler(msg, process_remove_admin)
 # ==========================================
-# SECTION 8: FEATURE ENGINE (EXTENDED LOGIC)
+# SECTION 8: FEATURE ENGINE (FIXED & SYNCED)
 # ==========================================
+
+def handle_audit_command(message):
+    """Bridge between UI and Grade A Engine - Verifies Admin Status First"""
+    u_id = message.from_user.id
+    target = get_user_channel(u_id)
+    
+    if not target:
+        bot.reply_to(message, "⚠️ **KH:** សូមកំណត់ឆានែលជាមុនសិន! (📍 Set Channel)\n**EN:** Please set a channel first!")
+        return
+        
+    try:
+        # Resolve target to get Chat ID correctly
+        if str(target).startswith("-100"): clean_target = int(target)
+        else: clean_target = target if str(target).startswith("@") else f"@{target}"
+        
+        # PRO CHECK: Verify if bot is actually in the channel and is admin
+        chat_member = bot.get_chat_member(clean_target, bot.get_me().id)
+        
+        if chat_member.status not in ['administrator', 'creator']:
+            bot.reply_to(message, f"❌ **Admin Required!**\n\nI am in {target}, but I am not an Admin. Please promote me so I can scan the ID sequence!")
+            return
+            
+    except Exception as e:
+        bot.reply_to(message, f"❌ **Connection Error!**\n\nI cannot find `{target}`. Make sure:\n1. The username is correct.\n2. I am added as an Admin there.")
+        return
+
+    wait_msg = bot.send_message(message.chat.id, "🛠️ **INITIALIZING GRADE A ENGINE...**\n📡 កំពុងចាប់ផ្ដើមម៉ាស៊ីនវិភាគ...", parse_mode="Markdown")
+    
+    # Start thread
+    threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target), daemon=True).start()
 
 def process_set_channel_logic(message):
     """Saves target channel with automatic @ formatting and UPSERT logic"""
     u_id = message.from_user.id
     val = message.text.strip()
     
-    # Auto-format input to @username style if it's missing the prefix
+    # Format input
     if not val.startswith('@') and not val.startswith('-100'): 
         val = f"@{val}"
     
     conn = None
     try:
         conn = db_pool.getconn()
-        cursor = conn.cursor()
-        # INSERT or UPDATE if user already exists in the database
-        cursor.execute("""
-            INSERT INTO users (user_id, target_channel) VALUES (%s, %s) 
-            ON CONFLICT (user_id) DO UPDATE SET target_channel = EXCLUDED.target_channel
-        """, (u_id, val))
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO users (user_id, target_channel) VALUES (%s, %s) 
+                ON CONFLICT (user_id) DO UPDATE SET target_channel = EXCLUDED.target_channel
+            """, (u_id, val))
         conn.commit()
-        bot.reply_to(message, f"✅ **Success!**\nTarget locked to: `{val}`")
+        bot.reply_to(message, f"✅ **Success!**\nTarget locked to: `{val}`\n\n_Now make sure I am an Admin in that channel!_")
     except Exception as e:
         bot.reply_to(message, f"❌ Database Error: {str(e)}")
     finally:
-        if conn: 
-            db_pool.putconn(conn)
+        if conn: db_pool.putconn(conn)
 
 def process_poll_names(message):
     """Processes names with the 4+1 Protection Rule Engine"""
@@ -689,27 +717,23 @@ def process_poll_names(message):
         bot.reply_to(message, "⚠️ **Set channel first!** Click 📍 Set Channel.")
         return
 
-    # Filter out empty lines and trim whitespace
+    # Filter names
     names = [n.strip() for n in message.text.split('\n') if n.strip()]
     
     if len(names) < 2:
         bot.reply_to(message, "❌ Please provide at least 2 names.")
         return
 
-    # 4+1 LOGIC START
-    # Split the list into chunks of 4 names
+    # 4+1 LOGIC: Split into chunks of 4
     chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
     
-    # If the last chunk has only 1 person, merge it into the previous group to avoid 1-option polls
+    # Avoid 1-option polls
     if len(chunks) > 1 and len(chunks[-1]) == 1:
         last_person = chunks.pop()
         chunks[-1].extend(last_person)
-    
-    
 
-    bot.send_message(message.chat.id, f"🚀 **Generating {len(chunks)} Polls for {target}...**")
+    bot.send_message(message.chat.id, f"🚀 **Dispatching {len(chunks)} Polls to {target}...**")
 
-    # Send the polls with a delay to avoid Telegram flood limits
     for i, group in enumerate(chunks, start=1):
         try:
             bot.send_poll(
@@ -719,9 +743,10 @@ def process_poll_names(message):
                 is_anonymous=True,
                 allows_multiple_answers=False
             )
-            time.sleep(1.8) # Delay to stay under Telegram API limits on Koyeb
+            time.sleep(2.0) # Conservative delay for Koyeb stability
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Poll {i} failed: {str(e)}")
+            break
 
     bot.send_message(message.chat.id, "✅ **Poll Dispatch Complete!**")
 
@@ -731,7 +756,10 @@ def process_add_admin(message):
         new_id = int(message.text.strip())
         conn = db_pool.getconn()
         with conn.cursor() as cur:
-            cur.execute("INSERT INTO users (user_id, is_admin) VALUES (%s, 1) ON CONFLICT (user_id) DO UPDATE SET is_admin = 1", (new_id,))
+            cur.execute("""
+                INSERT INTO users (user_id, is_admin) VALUES (%s, 1) 
+                ON CONFLICT (user_id) DO UPDATE SET is_admin = 1
+            """, (new_id,))
         conn.commit()
         db_pool.putconn(conn)
         bot.send_message(message.chat.id, f"✅ User `{new_id}` is now an Admin.")
@@ -739,7 +767,7 @@ def process_add_admin(message):
         bot.send_message(message.chat.id, f"❌ Failed to add Admin: {e}")
 
 def process_remove_admin(message):
-    """Removes admin status from a user in the database"""
+    """Removes admin status from a user"""
     try:
         target_id = int(message.text.strip())
         if target_id == SUPER_ADMIN_ID:
