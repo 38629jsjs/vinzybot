@@ -14,7 +14,7 @@ from telebot import types
 # SECTION 1: CONFIGURATION & DATABASE
 # ==========================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAH335zcWj4K-URWu3vEtdTmHk8Z1471lN8")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAGcsk0GnahkXoirzEmRmid6o8g9J44GcNM")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require")
 
