@@ -935,12 +935,52 @@ def handle_audit_command(message):
     # Ensure audit_thread_worker is defined above this!
     threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target), daemon=True).start()
 
-# 2. Second, define your execution block
-if __name__ == "__main__":
-    # ... (Your ANSI colors and DB checks go here) ...
-    
-    print(f"🤖 System Status: LIVE | Monitoring Traffic...")
+# ==========================================
+# SECTION 9: FINAL EXECUTION (ANTI-CONFLICT)
+# ==========================================
 
-    # 3. FINALLY, start polling
-    # Use your custom while loop OR bot.infinity_polling, not both at the same level.
-    bot.infinity_polling(skip_pending=True)
+if __name__ == "__main__":
+    # --- Terminal Identity ---
+    CYAN = "\033[1;36m"
+    GREEN = "\033[1;32m"
+    RED = "\033[1;31m"
+    YELLOW = "\033[1;33m"
+    RESET = "\033[0m"
+
+    print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+    print(f"{GREEN}🚀 Vinzy Audit Bot [v4.0 PRO] is initializing...{RESET}")
+    
+    # 1. Identity Check
+    try:
+        me = bot.get_me()
+        print(f"{GREEN}✅ Authenticated as: @{me.username}{RESET}")
+    except Exception as e:
+        print(f"{RED}❌ Connection Failed: {e}{RESET}")
+
+    print(f"{CYAN}🤖 System Status: LIVE | Monitoring Traffic...{RESET}")
+    print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+
+    # 2. Resilient Polling Loop
+    retry_delay = 5
+    while True:
+        try:
+            # We use polling here; ensure no other script is running this token!
+            bot.infinity_polling(
+                timeout=90, 
+                long_polling_timeout=20, 
+                skip_pending=True
+            )
+        except Exception as e:
+            err_msg = str(e)
+            # Handle the 409 Conflict specifically
+            if "Conflict" in err_msg:
+                print(f"{YELLOW}⚠️ 409 CONFLICT: Another instance is active. Waiting 10s...{RESET}")
+                time.sleep(10) 
+            else:
+                print(f"{RED}⚠️ POLLING CRASH: {err_msg}{RESET}")
+                time.sleep(retry_delay)
+                
+            # Dynamic retry backoff
+            retry_delay = min(retry_delay + 5, 60)
+            print(f"{CYAN}🔄 Attempting to re-connect...{RESET}")
+            continue
