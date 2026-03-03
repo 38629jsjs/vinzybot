@@ -1,4 +1,4 @@
-import telebot
+import os 
 import psycopg2
 from psycopg2 import pool
 import pytz
@@ -9,11 +9,20 @@ from datetime import datetime
 # ==========================================
 # SECTION 1: CONFIGURATION (BOT MODE)
 # ==========================================
+# 1. Get Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAEj5hYbo7a2TFZnfYWF7zf1NaCPx4fgyT0")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require")
 
-# Initialize Telegram Bot
+# 2. Initialize Database Pool BEFORE the Bot starts
+try:
+    db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, DATABASE_URL)
+    print("✅ [DATABASE] Connection Pool Initialized.")
+except Exception as e:
+    print(f"❌ [DATABASE] Failed to create pool: {e}")
+    sys.exit(1)
+
+# 3. Initialize Telegram Bot
 bot = telebot.TeleBot(BOT_TOKEN)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (ADMINS/USERS/PRIVACY)
@@ -642,269 +651,64 @@ def check_stats(message):
     )
     audit_thread.start()
 # ==========================================
-# SECTION 7: USER INTERFACE & PERMISSIONS
+# SECTION 7: MASTER UI & ROUTING
 # ==========================================
-from telebot import types
 
 @bot.message_handler(commands=['start', 'menu'])
-def start(message):
-    """Displays the control panel based on user language with security check"""
+def start_panel(message):
     u_id = message.from_user.id
-    
-    # 1. SECURITY CHECK (Neon DB & Hardcoded IDs)
     if not is_authorized(u_id):
-        remove_markup = types.ReplyKeyboardRemove()
-        msg = (
-            "🚫 **Access Denied! / បដិសេធការចូល!**\n\n"
-            "EN: This bot is private. Contact @vinzystorezz to buy access.\n"
-            "KH: គណនីរបស់អ្នកមិនទាន់មានសិទ្ធិប្រើប្រាស់ទេ។ សូមទាក់ទង @vinzystorezz ដើម្បីទិញសិទ្ធិ។"
-        )
-        bot.send_message(message.chat.id, msg, reply_markup=remove_markup, parse_mode="Markdown")
+        bot.send_message(message.chat.id, "🚫 Access Denied. Contact @vinzystorezz.")
         return 
 
-    # 2. FETCH PREFERENCES
     lang = get_user_lang(u_id)
-    
-    # 3. CONFIGURE MULTILINGUAL LABELS
-    labels = {
-        'poll': "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត",
-        'audit': "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល",
-        'broadcast': "📢 Broadcast" if lang == 'en' else "📢 ផ្សព្វផ្សាយ",
-        'schedule': "📅 Schedule Info" if lang == 'en' else "📅 កាលវិភាគ",
-        'set': "📍 Set Channel" if lang == 'en' else "📍 កំណត់ឆានែល",
-        'help': "❓ Help" if lang == 'en' else "❓ ជំនួយ",
-        'lang': "🌐 Language" if lang == 'en' else "🌐 ភាសា",
-        'detect': "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល"
-    }
-
-    # 4. ORGANIZE KEYBOARD LAYOUT
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(labels['poll'], labels['audit'])
-    markup.add(labels['broadcast'], labels['schedule'])
-    markup.add(labels['set'], labels['detect'])
-    markup.add(labels['help'], labels['lang'])
     
-    # 5. ADMIN/OWNER SPECIFIC UI
+    # Multilingual Labels
+    l_poll = "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត"
+    l_audit = "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល"
+    l_set = "📍 Set Channel" if lang == 'en' else "📍 កំណត់ឆានែល"
+    l_report = "🛡️ Report Channel" if lang == 'en' else "🛡️ រាយការណ៍ឆានែល"
+    l_lang = "🌐 Language" if lang == 'en' else "🌐 ភាសា"
+
+    markup.add(l_poll, l_audit)
+    markup.add(l_set, l_report)
+    markup.add(l_lang)
+    
     if u_id == SUPER_ADMIN_ID:
         markup.add("➕ Add Admin", "➖ Remove Admin")
-        welcome_text = (
-            "👑 **OWNER CONTROL PANEL**\nWelcome back, Boss." if lang == 'en' else 
-            "👑 **ផ្ទាំងគ្រប់គ្រងម្ចាស់ប៊ត**\nសូមស្វាគមន៍ម្ចាស់ប៊ត។"
-        )
-    else:
-        welcome_text = (
-            "🛡️ **ADMIN CONTROL PANEL**" if lang == 'en' else 
-            "🛡️ **ផ្ទាំងគ្រប់គ្រងអ្នកអតមីន**"
-        )
 
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-
-# --- THE SMART ROUTER (ការចាត់ចែងបញ្ជា) ---
+    bot.send_message(message.chat.id, "🛡️ Vinzy Control Panel", reply_markup=markup)
 
 @bot.message_handler(func=lambda message: True)
-def handle_menu_clicks(message):
-    """Routes button clicks and text inputs to their specific functions"""
+def master_router(message):
     u_id = message.from_user.id
     if not is_authorized(u_id): return
     
     text = message.text
-    lang = get_user_lang(u_id)
-
-    # 1. CHANNEL SETTING DETECTION (Direct Link or @username input)
-    if text.startswith('@') or 't.me/' in text:
-        process_set_channel_logic(message)
-        return
-
-    # 2. FEATURE ROUTING
+    
+    # Route to Poll logic
     if text in ["📊 Create Poll", "📊 បង្កើតការបោះឆ្នោត"]:
-        msg = bot.reply_to(message, "📊 **EN:** Send names (one per line):\n**KH:** សូមផ្ញើបញ្ជីឈ្មោះ (១ ឈ្មោះក្នុង ១ បន្ទាត់):")
+        msg = bot.reply_to(message, "📋 Send names (one per line):")
         bot.register_next_step_handler(msg, process_poll_names)
 
-    elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
-        check_stats(message) # Logic from Section 5/6
-
+    # Route to Set Channel logic
     elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
-        prompt = "📍 **EN:** Send @username\n**KH:** សូមផ្ញើឈ្មោះឆានែល:"
-        msg = bot.reply_to(message, prompt)
+        msg = bot.reply_to(message, "📍 Send @username:")
         bot.register_next_step_handler(msg, process_set_channel_logic)
 
-    elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
-        start_broadcast_process(message) # Logic from Section 4
-
-    elif text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"]:
-        report_start(message) 
-
-    elif text in ["🌐 Language", "🌐 ភាសា"]:
-        show_language_keyboard(message)
-
-    elif text in ["❓ Help", "❓ ជំនួយ"]:
-        send_help(message, lang)
-
-    # 3. OWNER PRIVILEGES
-    elif u_id == SUPER_ADMIN_ID:
-        if text == "➕ Add Admin":
-            msg = bot.reply_to(message, "🆔 Send the User ID to grant access:")
-            bot.register_next_step_handler(msg, process_add_admin)
-        elif text == "➖ Remove Admin":
-            msg = bot.reply_to(message, "🆔 Send the User ID to revoke access:")
-            bot.register_next_step_handler(msg, process_remove_admin)
-
-# --- SUPPORTING FUNCTIONS ---
-
-def show_language_keyboard(message):
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("English 🇬🇧", callback_data='set_lang_en'),
-               types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data='set_lang_kh'))
-    bot.send_message(message.chat.id, "🌐 Select Language / សូមជ្រើសរើសភាសា:", reply_markup=markup)
-
-def process_add_admin(message):
-    try:
-        new_id = int(message.text.strip())
-        conn = db_pool.getconn()
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO users (user_id, is_admin) VALUES (%s, 1) ON CONFLICT (user_id) DO UPDATE SET is_admin = 1", (new_id,))
-        conn.commit()
-        db_pool.putconn(conn)
-        bot.send_message(message.chat.id, f"✅ User `{new_id}` added as Admin.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Error: {e}")
-
-def process_remove_admin(message):
-    try:
-        target_id = int(message.text.strip())
-        if target_id == SUPER_ADMIN_ID:
-            bot.send_message(message.chat.id, "❌ Cannot remove Super Admin.")
-            return
-        conn = db_pool.getconn()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET is_admin = 0 WHERE user_id = %s", (target_id,))
-        conn.commit()
-        db_pool.putconn(conn)
-        bot.send_message(message.chat.id, f"➖ User `{target_id}` removed from Admin.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Error: {e}")
-
-def send_help(message, lang):
-    help_text = (
-        "❓ **How to use:**\n1. Set channel using 📍 button.\n2. Use 📊 for Polls.\n3. Use 🔍 for Audits." if lang == 'en' else
-        "❓ **របៀបប្រើប្រាស់:**\n1. កំណត់ឆានែលដោយចុចប៊ូតុង 📍\n2. ប្រើ 📊 សម្រាប់បោះឆ្នោត\n3. ប្រើ 🔍 សម្រាប់ពិនិត្យឆានែល"
-    )
-    bot.send_message(message.chat.id, help_text, parse_mode="Markdown")
-# ==========================================
-# SECTION 8: FULL FEATURE MENU & ROUTING
-# ==========================================
-
-# --- CONFIGURATION HELPERS ---
-
-def set_channel_prompt(message):
-    """Starts the process to bind a target channel to the admin's account"""
-    u_id = message.from_user.id
-    lang = get_user_lang(u_id)
-    
-    prompt = (
-        "📍 **Target Channel Configuration**\n\n"
-        "EN: Send the channel @username or ID (e.g., @mychannel or -100123456789):\n"
-        "KH: សូមផ្ញើឈ្មោះ Channel របស់អ្នក (ឧទាហរណ៍ @username ឬ ID ឆានែល):"
-    )
-    msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_set_channel)
-
-def process_set_channel(message):
-    """Saves the target channel to Neon PostgreSQL using an UPSERT logic"""
-    u_id = message.from_user.id
-    channel_val = message.text.strip()
-    
-    # Auto-format input
-    if not channel_val.startswith('@') and not channel_val.startswith('-100'):
-        channel_val = f"@{channel_val}"
-        
-    conn = None
-    try:
-        conn = db_pool.getconn()
-        cursor = conn.cursor()
-        # Use UPSERT to ensure the user row exists
-        cursor.execute("""
-            INSERT INTO users (user_id, target_channel) VALUES (%s, %s)
-            ON CONFLICT (user_id) DO UPDATE SET target_channel = EXCLUDED.target_channel
-        """, (u_id, channel_val))
-        conn.commit()
-        
-        success_text = (
-            f"✅ **Success! / រួចរាល់!**\n\n"
-            f"Target locked to: `{channel_val}`\n"
-            f"EN: Features are now unlocked for this channel.\n"
-            f"KH: អ្នកអាចប្រើមុខងារទាំងអស់ទៅកាន់ឆានែលនេះបានហើយ។"
-        )
-        bot.reply_to(message, success_text, parse_mode="Markdown")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Database Error: {str(e)}")
-    finally:
-        if conn:
-            db_pool.putconn(conn)
-
-# --- THE GLOBAL BUTTON ROUTER ---
-
-@bot.message_handler(func=lambda m: True)
-def handle_all_buttons(message):
-    """Central routing for all keyboard interactions"""
-    u_id = message.from_user.id
-    
-    # Security Layer
-    if not is_authorized(u_id): 
-        return
-    
-    lang = get_user_lang(u_id)
-    text = message.text
-
-    # 1. SETTINGS & HELP
-    if text in ["🌐 Language", "🌐 ភាសា"]:
-        show_language_keyboard(message)
-
-    elif text in ["❓ Help", "❓ ជំនួយ"]:
-        send_help(message, lang)
-
-    elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
-        set_channel_prompt(message)
-
-    # 2. POLL SYSTEM (Logic Below)
-    elif text in ["📊 Create Poll", "📊 បង្កើតការបោះឆ្នោត"]:
-        prompt = (
-            "📋 **Poll Creation**\n\n"
-            "EN: Send name list (one per line):\n"
-            "KH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (ម្នាក់មួយបន្ទាត់):"
-        )
-        msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_poll_names)
-
-    # 3. AUDIT SYSTEM (Linked to Section 5)
+    # Route to Audit logic
     elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
         check_stats(message)
 
-    # 4. BROADCAST SYSTEM (Linked to Section 4)
-    elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
-        start_broadcast_process(message)
+    # Route to Language logic
+    elif text in ["🌐 Language", "🌐 ភាសា"]:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("English 🇬🇧", callback_data='set_lang_en'),
+                   types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data='set_lang_kh'))
+        bot.send_message(message.chat.id, "Select Language:", reply_markup=markup)
 
-    # 5. SCHEDULE & SYSTEM STATUS
-    elif text in ["📅 Schedule Info", "📅 កាលវិភាគ"]:
-        tz_kh = pytz.timezone('Asia/Phnom_Penh')
-        now_kh = datetime.now(tz_kh).strftime("%I:%M %p")
-        
-        status = (
-            f"⏰ **System Status**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🇰🇭 KH Time: `{now_kh}`\n"
-            f"📡 Daily Task: `09:00 AM`\n"
-            f"🛡️ Security: `Active`\n"
-            f"━━━━━━━━━━━━━━━━━━"
-        )
-        bot.send_message(message.chat.id, status, parse_mode="Markdown")
-
-    # 6. REPORTING SYSTEM
-    elif text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"]:
-        report_start(message)
-
-    # 7. SUPER-ADMIN COMMANDS
+    # Super Admin Tools
     elif u_id == SUPER_ADMIN_ID:
         if text == "➕ Add Admin":
             msg = bot.reply_to(message, "🆔 Send User ID to Add:")
@@ -912,23 +716,104 @@ def handle_all_buttons(message):
         elif text == "➖ Remove Admin":
             msg = bot.reply_to(message, "🆔 Send User ID to Remove:")
             bot.register_next_step_handler(msg, process_remove_admin)
+# ==========================================
+# SECTION 8: MASTER ROUTER (FIXED)
+# ==========================================
 
-# --- POLL ENGINE (4+1 LOGIC) ---
+def set_channel_prompt(message):
+    """Starts the process to bind a target channel to the admin's account"""
+    u_id = message.from_user.id
+    lang = get_user_lang(u_id)
+    prompt = (
+        "📍 **Target Channel Configuration**\n\n"
+        "EN: Send the channel @username or ID:\n"
+        "KH: សូមផ្ញើឈ្មោះ Channel របស់អ្នក:"
+    )
+    msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_set_channel_logic)
+
+@bot.message_handler(func=lambda m: True)
+def handle_all_buttons(message):
+    """Central routing for all interactions - Prevents Handler Conflicts"""
+    u_id = message.from_user.id
+    if not is_authorized(u_id): 
+        return
+    
+    lang = get_user_lang(u_id)
+    text = message.text
+
+    # 1. MAIN FEATURES
+    if text in ["📊 Create Poll", "📊 បង្កើតការបោះឆ្នោត"]:
+        prompt = "📋 **EN:** Send names (one per line):\n**KH:** សូមផ្ញើបញ្ជីឈ្មោះ (ម្នាក់មួយបន្ទាត់):"
+        msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_poll_names)
+
+    elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
+        set_channel_prompt(message)
+
+    elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
+        check_stats(message) # Calls the logic from your Section 5
+
+    elif text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"]:
+        start_broadcast_process(message) # Calls the logic from your Section 4
+
+    # 2. SETTINGS & INFO
+    elif text in ["🌐 Language", "🌐 ភាសា"]:
+        show_language_keyboard(message)
+
+    elif text in ["📅 Schedule Info", "📅 កាលវិភាគ"]:
+        tz_kh = pytz.timezone('Asia/Phnom_Penh')
+        now_kh = datetime.now(tz_kh).strftime("%I:%M %p")
+        status = f"⏰ **System Status**\n━━━━━━━━━━━━\n🇰🇭 KH Time: `{now_kh}`\n📡 DB: `Online` (Neon)\n━━━━━━━━━━━━"
+        bot.send_message(message.chat.id, status, parse_mode="Markdown")
+
+    # 3. ADMIN TOOLS
+    elif u_id == SUPER_ADMIN_ID:
+        if text == "➕ Add Admin":
+            msg = bot.reply_to(message, "🆔 Send User ID to Add:")
+            bot.register_next_step_handler(msg, process_add_admin)
+        elif text == "➖ Remove Admin":
+            msg = bot.reply_to(message, "🆔 Send User ID to Remove:")
+            bot.register_next_step_handler(msg, process_remove_admin)
+            # ==========================================
+# SECTION 8: FEATURE ENGINE (EXTENDED)
+# ==========================================
+
+def process_set_channel_logic(message):
+    """Saves target channel with automatic @ formatting"""
+    u_id = message.from_user.id
+    val = message.text.strip()
+    if not val.startswith('@') and not val.startswith('-100'): 
+        val = f"@{val}"
+    
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO users (user_id, target_channel) VALUES (%s, %s) 
+            ON CONFLICT (user_id) DO UPDATE SET target_channel = EXCLUDED.target_channel
+        """, (u_id, val))
+        conn.commit()
+        bot.reply_to(message, f"✅ **Success!**\nTarget locked to: `{val}`")
+    except Exception as e:
+        bot.reply_to(message, f"❌ DB Error: {e}")
+    finally:
+        if conn: db_pool.putconn(conn)
 
 def process_poll_names(message):
-    """Processes names into chunks, ensuring no single-option polls occur"""
+    """Processes names with the 4+1 Protection Rule"""
     u_id = message.from_user.id
     target = get_user_channel(u_id)
     
     if not target:
-        bot.reply_to(message, "⚠️ **KH:** កំណត់ឆានែលសិន / **EN:** Set channel first.")
+        bot.reply_to(message, "⚠️ Set channel first via 📍 button.")
         return
 
-    # Clean input: filter out empty lines
+    # Filter out empty lines
     names = [n.strip() for n in message.text.split('\n') if n.strip()]
-    
     if len(names) < 2:
-        bot.reply_to(message, "❌ Please provide at least 2 names.")
+        bot.reply_to(message, "❌ Need at least 2 names.")
         return
 
     # Create chunks of 4
@@ -947,14 +832,13 @@ def process_poll_names(message):
                 chat_id=target,
                 question=f"Round {i} / ជុំទី {i}",
                 options=group,
-                is_anonymous=True,
-                allows_multiple_answers=False
+                is_anonymous=True
             )
-            time.sleep(1.5) # Prevent Flood Limit
+            time.sleep(1.8) # Critical sleep to prevent Koyeb/Telegram flood ban
         except Exception as e:
             bot.send_message(message.chat.id, f"❌ Poll {i} failed: {e}")
 
-    bot.send_message(message.chat.id, "✅ **Poll Sequence Complete!**")
+    bot.send_message(message.chat.id, "✅ **Poll Dispatch Complete!**")
 # ==========================================
 # SECTION 9: MASS REPORT SIMULATOR (PRO)
 # ==========================================
