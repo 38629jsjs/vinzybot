@@ -1000,8 +1000,23 @@ def handle_audit_command(message):
     threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target), daemon=True).start()
 
 # ==========================================
-# SECTION 9: FINAL EXECUTION (ANTI-CONFLICT)
+# SECTION 9: SYSTEM STARTUP & SHUTDOWN
 # ==========================================
+import signal
+
+def graceful_exit(signum, frame):
+    """Ensures the DB pool is closed when Koyeb stops the instance"""
+    print("\n🛑 [SYSTEM] Shutting down gracefully...")
+    try:
+        db_pool.closeall()
+        print("✅ [DATABASE] Connections closed.")
+    except:
+        pass
+    sys.exit(0)
+
+# Register the shutdown signals for Koyeb/Linux
+signal.signal(signal.SIGINT, graceful_exit)
+signal.signal(signal.SIGTERM, graceful_exit)
 
 if __name__ == "__main__":
     # --- Terminal Identity ---
@@ -1014,21 +1029,22 @@ if __name__ == "__main__":
     print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
     print(f"{GREEN}🚀 Vinzy Audit Bot [v4.0 PRO] is initializing...{RESET}")
     
-    # 1. Identity Check
     try:
         me = bot.get_me()
         print(f"{GREEN}✅ Authenticated as: @{me.username}{RESET}")
+        print(f"{CYAN}🤖 System Status: LIVE | Monitoring Traffic...{RESET}")
     except Exception as e:
         print(f"{RED}❌ Connection Failed: {e}{RESET}")
+        time.sleep(10)
+        sys.exit(1)
 
-    print(f"{CYAN}🤖 System Status: LIVE | Monitoring Traffic...{RESET}")
     print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
 
     # 2. Resilient Polling Loop
     retry_delay = 5
     while True:
         try:
-            # We use polling here; ensure no other script is running this token!
+            # skip_pending=True ignores old messages sent while bot was offline
             bot.infinity_polling(
                 timeout=90, 
                 long_polling_timeout=20, 
@@ -1036,15 +1052,13 @@ if __name__ == "__main__":
             )
         except Exception as e:
             err_msg = str(e)
-            # Handle the 409 Conflict specifically
             if "Conflict" in err_msg:
-                print(f"{YELLOW}⚠️ 409 CONFLICT: Another instance is active. Waiting 10s...{RESET}")
-                time.sleep(10) 
+                print(f"{YELLOW}⚠️ 409 CONFLICT: Old instance still active. Waiting 15s...{RESET}")
+                time.sleep(15) 
             else:
-                print(f"{RED}⚠️ POLLING CRASH: {err_msg}{RESET}")
+                print(f"{RED}⚠️ POLLING ERROR: {err_msg}{RESET}")
                 time.sleep(retry_delay)
                 
-            # Dynamic retry backoff
+            # Dynamic retry backoff so we don't spam the API
             retry_delay = min(retry_delay + 5, 60)
             print(f"{CYAN}🔄 Attempting to re-connect...{RESET}")
-            continue
