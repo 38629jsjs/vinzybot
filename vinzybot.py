@@ -12,22 +12,52 @@ from telebot import types
 
 # ==========================================
 # SECTION 1: CONFIGURATION & DATABASE
-# ==========================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8782687814:AAGcsk0GnahkXoirzEmRmid6o8g9J44GcNM")
+# ==========================================# 1. Load Environment Variables from Koyeb
+# We use .get() to avoid crashes if a variable is missing
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_5vXuDLicq2wT@ep-small-boat-aim6necc-pooler.c-4.us-east-1.aws.neon.tech/neondb?sslmode=require")
 
-# 1. Initialize Pool FIRST
+# 2. Critical Safety Check
+if not BOT_TOKEN or not DATABASE_URL:
+    print("❌ [CRITICAL] Missing BOT_TOKEN or DATABASE_URL in Koyeb Variables!")
+    # We wait 10 seconds so you can read the error in Koyeb logs before it restarts
+    time.sleep(10)
+    sys.exit(1)
+
+# 3. Initialize Threaded Connection Pool
+# This allows Section 5 (Audit) to run in the background without blocking the bot
 try:
-    db_pool = psycopg2.pool.ThreadedConnectionPool(1, 20, DATABASE_URL)
+    db_pool = psycopg2.pool.ThreadedConnectionPool(
+        1, 20, 
+        DATABASE_URL,
+        sslmode='require'
+    )
     print("✅ [DATABASE] Connection Pool Initialized.")
 except Exception as e:
     print(f"❌ [DATABASE] Failed to create pool: {e}")
+    time.sleep(10)
     sys.exit(1)
 
-# 2. Initialize Bot SECOND
-bot = telebot.TeleBot(BOT_TOKEN)
+# 4. Initialize Bot Instance
+bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# 5. Database Helper Function
+# Used by Section 8 to save channels and admins
+def get_user_channel(user_id):
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT target_channel FROM users WHERE user_id = %s", (user_id,))
+            res = cur.fetchone()
+            return res[0] if res else None
+    except Exception as e:
+        print(f"⚠️ DB Fetch Error: {e}")
+        return None
+    finally:
+        if conn:
+            db_pool.putconn(conn)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (ADMINS/USERS/PRIVACY)
 # ==========================================
