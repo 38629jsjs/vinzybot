@@ -1,42 +1,34 @@
 import os
 import sys
+import time
 import asyncio
+import random
 import psycopg2
 from psycopg2 import pool
-import pytz
-import time
-import threading
-import random
-from datetime import datetime
-
-# Telethon Imports
-from telethon import TelegramClient, events, functions, types, errors
-from telethon.sessions import StringSession
+from telethon import TelegramClient, events, functions, types
+from telethon.sessions import StringSession StringSession
 
 # ==========================================
 # SECTION 1: CONFIGURATION & DATABASE
 # ==========================================
 
-# 1. Load Environment Variables from Koyeb (Safety First)
-# I have removed the hardcoded API_ID and HASH. 
-# Make sure to add them in your Koyeb "Environment Variables" section.
+# 1. Load Environment Variables from Koyeb
 API_ID = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 STRING_SESSION = os.getenv("STRING_SESSION")
 DATABASE_URL = os.getenv("DATABASE_URL")
+# Your ID as the owner
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
 
 # 2. Critical Safety Check
-# The bot will stop and show an error in Koyeb logs if you forgot a variable
 if not all([API_ID, API_HASH, STRING_SESSION, DATABASE_URL]):
     print("❌ [CRITICAL] Missing Variables in Koyeb! Check API_ID, API_HASH, STRING_SESSION, and DATABASE_URL.")
     time.sleep(10)
     sys.exit(1)
 
-# Convert API_ID to integer for Telethon
 API_ID = int(API_ID)
 
-# 3. Initialize Threaded Connection Pool for PostgreSQL
+# 3. Initialize Threaded Connection Pool
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
         1, 20, 
@@ -44,17 +36,34 @@ try:
         sslmode='require'
     )
     print("✅ [DATABASE] Connection Pool Initialized.")
+    
+    # --- AUTO-TABLE CREATION ---
+    # This prevents the bot from crashing if the table is missing
+    conn = db_pool.getconn()
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                target_channel TEXT,
+                is_admin INTEGER DEFAULT 0,
+                lang TEXT DEFAULT 'en'
+            )
+        """)
+        conn.commit()
+    db_pool.putconn(conn)
+    print("📁 [DATABASE] Table 'users' verified and ready.")
+    
 except Exception as e:
-    print(f"❌ [DATABASE] Failed to create pool: {e}")
+    print(f"❌ [DATABASE] Setup Failed: {e}")
     time.sleep(10)
     sys.exit(1)
 
-# 4. Initialize Telethon Client
-# Using StringSession allows the bot to run 24/7 on Koyeb without re-logging
+# 4. Initialize Telethon Client (Your Main Account Session)
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 # 5. Database Helper Function
 def get_user_channel(user_id):
+    """Retrieves the saved target channel for a specific user"""
     conn = None
     try:
         conn = db_pool.getconn()
@@ -68,6 +77,22 @@ def get_user_channel(user_id):
     finally:
         if conn:
             db_pool.putconn(conn)
+
+def is_authorized(user_id):
+    """Checks if a user is the Super Admin or a promoted Database Admin"""
+    if user_id == SUPER_ADMIN_ID:
+        return True
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT is_admin FROM users WHERE user_id = %s", (user_id,))
+            res = cur.fetchone()
+            return res and res[0] == 1
+    except:
+        return False
+    finally:
+        if conn: db_pool.putconn(conn)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (ADMINS/USERS/PRIVACY)
 # ==========================================
@@ -778,47 +803,40 @@ def process_remove_admin(message):
 # SECTION 9: MASS REPORT SIMULATOR (PRO)
 # ==========================================
 import random
-import threading
-import time
+import asyncio
 
 # --- UTILITY GENERATORS ---
-
 def generate_fake_ip():
-    """Generates a random IPv4 address for visual realism"""
     return f"{random.randint(100, 223)}.{random.randint(1, 254)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
 
 def get_random_node():
-    """Returns a fake specialized server node location"""
     nodes = ["SG-Cloud-01", "HK-Data-Center", "US-East-Node", "EU-West-Proxy", "KH-Mainframe-09"]
     return random.choice(nodes)
 
-# Global Session Lock to prevent overlapping threads per user
 active_reports = set()
 
 # --- INTERFACE START ---
-
-@bot.message_handler(func=lambda m: m.text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"])
-def report_start(message):
-    """Starts the advanced mass report simulation interface"""
-    u_id = message.from_user.id
+@client.on(events.NewMessage(func=lambda e: e.text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"]))
+async def report_start(event):
+    """Starts the advanced mass report simulation interface using Main Account Session"""
+    u_id = event.sender_id
     if not is_authorized(u_id): return
 
     if u_id in active_reports:
-        bot.reply_to(message, "⚠️ **Process Active:** Please wait for the current sequence to finish.")
+        await event.reply("⚠️ **Process Active:** Please wait for the current sequence to finish.")
         return
 
-    lang = get_user_lang(u_id)
     target = get_user_channel(u_id)
-
     if not target:
-        bot.reply_to(message, "⚠️ **EN:** Please lock a channel first using /set\n⚠️ **KH:** សូមកំណត់ Channel ជាមុនសិន")
+        await event.reply("⚠️ **EN:** Please lock a channel first using /set\n⚠️ **KH:** សូមកំណត់ Channel ជាមុនសិន")
         return
 
-    markup = types.InlineKeyboardMarkup(row_width=3)
-    btn1 = types.InlineKeyboardButton("Standard (250)", callback_data="run_rep_250")
-    btn2 = types.InlineKeyboardButton("Extreme (750)", callback_data="run_rep_750")
-    btn3 = types.InlineKeyboardButton("Overload (1500)", callback_data="run_rep_1500")
-    markup.add(btn1, btn2, btn3)
+    # Use Telethon's Button format
+    buttons = [
+        [types.KeyboardButtonCallback("Standard (250)", data=b"run_rep_250"),
+         types.KeyboardButtonCallback("Extreme (750)", data=b"run_rep_750")],
+        [types.KeyboardButtonCallback("Overload (1500)", data=b"run_rep_1500")]
+    ]
 
     msg = (f"🛡️ **CYBER-SECURITY INTERFACE**\n"
            f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -827,79 +845,65 @@ def report_start(message):
            f"EN: Choose reporting intensity for T&S Nodes:\n"
            f"KH: សូមជ្រើសរើសកម្រិតនៃការរាយការណ៍:")
     
-    bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
+    await event.reply(msg, buttons=buttons)
 
 # --- SIMULATION CORE LOGIC ---
-
-def execute_report_simulation(call):
-    """
-    Hyper-realistic simulated mass report.
-    Includes your Main Account in the simulation logs for authority.
-    """
-    u_id = call.from_user.id
-    chat_id = call.message.chat.id
-    msg_id = call.message.message_id
+@client.on(events.CallbackQuery(data=lambda d: d.startswith(b'run_rep_')))
+async def handle_report_callback(call):
+    u_id = call.sender_id
+    if u_id in active_reports:
+        await call.answer("❌ Already running!", alert=True)
+        return
+    
+    active_reports.add(u_id)
+    await call.answer("Initializing Sequence...")
     
     try:
-        amount = call.data.split('_')[2]
+        amount = call.data.decode().split('_')[2]
         target = get_user_channel(u_id) or "Unknown_Ref"
         
         # 1. Initialization UI
-        bot.edit_message_text(
-            f"🔄 **Establishing Encrypted Tunnel...**\n`[░░░░░░░░░░░░░░░░░░░░] 0%`", 
-            chat_id, msg_id, parse_mode="Markdown"
-        )
+        msg = await call.edit(f"🔄 **Establishing Encrypted Tunnel...**\n`[░░░░░░░░░░░░░░░░░░░░] 0%`")
 
         stages = [
             {"p": 5, "t": "Bypassing Cloudflare protection layers..."},
             {"p": 12, "t": "Establishing WebSocket Handshake with API..."},
             {"p": 25, "t": "Synchronizing 128 Dedicated Proxy Nodes..."},
-            {"p": 35, "t": "Linking Main Account Session for Master Signal..."}, # Main Acc link
+            {"p": 35, "t": "Linking Main Account Session for Master Signal..."}, 
             {"p": 50, "t": f"Injecting {amount} Fraud Metadata Packets..."},
             {"p": 70, "t": "Spoofing Device User-Agents (Mobile & Desktop)..."},
-            {"p": 85, "t": "Main Account verifying submission status..."}, # Main Acc check
+            {"p": 85, "t": "Main Account verifying submission status..."}, 
             {"p": 95, "t": "Clearing digital footprints and IP logs..."},
             {"p": 100, "t": "✅ **SEQUENCE COMPLETED SUCCESSFULLY**"}
         ]
 
         for stage in stages:
-            time.sleep(random.uniform(1.8, 3.5)) 
-            
+            await asyncio.sleep(random.uniform(1.8, 3.0))
             bar_filled = stage['p'] // 5
             bar = "█" * bar_filled + "░" * (20 - bar_filled)
             
-            # Simulated Console Logs
             log_lines = []
             for _ in range(2):
-                ip = generate_fake_ip()
-                node = get_random_node()
-                log_lines.append(f"📡 `[{node}]` -> `{ip}` -> **SENT**")
-            
-            # Special Main Account Log entry
+                log_lines.append(f"📡 `[{get_random_node()}]` -> `{generate_fake_ip()}` -> **SENT**")
             log_lines.append(f"🔑 `[MAIN-SESSION]` -> **MASTER-REPORT-FLAGGED**")
             
             logs = "\n".join(log_lines)
             
-            try:
-                bot.edit_message_text(
-                    f"🛡️ **SECURITY OPS: ACTIVE**\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🎯 **Target:** `{target}`\n"
-                    f"📊 **Progress:** `[{bar}] {stage['p']}%`\n\n"
-                    f"⚙️ **Current Action:**\n_{stage['t']}_\n\n"
-                    f"🖥️ **Live Console Logs:**\n{logs}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"⚡ _Engine: @vinzystorezz V4-PRO_",
-                    chat_id, msg_id, parse_mode="Markdown"
-                )
-            except Exception:
-                continue
+            await msg.edit(
+                f"🛡️ **SECURITY OPS: ACTIVE**\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 **Target:** `{target}`\n"
+                f"📊 **Progress:** `[{bar}] {stage['p']}%`\n\n"
+                f"⚙️ **Current Action:**\n_{stage['t']}_\n\n"
+                f"🖥️ **Live Console Logs:**\n{logs}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚡ _Engine: @vinzystorezz V4-PRO_"
+            )
 
-        # Final Summary
-        time.sleep(2)
+        await asyncio.sleep(2)
         ticket_id = f"TKS-{random.randint(100000, 999999)}"
         
-        final_report = (
+        await client.send_message(call.chat_id, (
             f"✅ **MASS REPORT PROTOCOL FINISHED**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📥 **Total Reports:** `{amount}` Packets\n"
@@ -911,92 +915,60 @@ def execute_report_simulation(call):
             f"EN: Data successfully injected via main account signal. Violation review takes 24-48 hours.\n\n"
             f"KH: ទិន្នន័យត្រូវបានបញ្ជូនទៅកាន់ប្រព័ន្ធរួមទាំងគណនីមេ។ ការត្រួតពិនិត្យត្រូវការពេល ២៤ ទៅ ៤៨ ម៉ោង។\n\n"
             f"⚡ _Powered by @vinzystorezz_"
-        )
-        
-        bot.send_message(chat_id, final_report, parse_mode="Markdown")
+        ))
 
     except Exception as e:
         print(f"Simulation Error: {e}")
     finally:
         active_reports.discard(u_id)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('run_rep_'))
-def handle_report_callback(call):
-    u_id = call.from_user.id
-    if u_id in active_reports:
-        bot.answer_callback_query(call.id, "❌ Already running!")
-        return
-    bot.answer_callback_query(call.id, "Initializing Sequence...")
-    active_reports.add(u_id)
-    threading.Thread(target=execute_report_simulation, args=(call,), daemon=True).start()
+# ==========================================
+# SECTION 10: SYSTEM STARTUP & SHUTDOWN
+# ==========================================
 
 import signal
 import sys
 import asyncio
 
-# ==========================================
-# SECTION 10: SYSTEM STARTUP & SHUTDOWN
-# ==========================================
-
 def graceful_exit(signum, frame):
     """Ensures the DB pool and Client are closed when Koyeb stops the instance"""
     print(f"\n\033[1;31m🛑 [SYSTEM] Shutting down gracefully...\033[0m")
     try:
-        # Close database connections
-        db_pool.closeall()
-        print("✅ [DATABASE] Connections closed.")
+        if 'db_pool' in globals():
+            db_pool.closeall()
+            print("✅ [DATABASE] Connections closed.")
         
-        # Stop the MTProto Client
-        if client.is_connected():
-            loop = asyncio.get_event_loop()
-            loop.create_task(client.disconnect())
+        if 'client' in globals() and client.is_connected():
+            # Disconnect in a thread-safe way for signal handlers
+            asyncio.get_event_loop().stop()
             print("✅ [MTPROTO] Session disconnected.")
-            
     except Exception as e:
         print(f"⚠️ Error during shutdown: {e}")
-    
     sys.exit(0)
 
-# Register the shutdown signals for Koyeb/Linux
 signal.signal(signal.SIGINT, graceful_exit)
 signal.signal(signal.SIGTERM, graceful_exit)
 
 async def start_vinzy_engine():
-    """
-    Main Execution Loop: Handles authentication and resilient connection.
-    """
-    # --- Terminal Identity ---
-    CYAN = "\033[1;36m"
-    GREEN = "\033[1;32m"
-    RED = "\033[1;31m"
-    YELLOW = "\033[1;33m"
-    RESET = "\033[0m"
+    """Main Execution Loop: Handles authentication and resilient connection."""
+    CYAN, GREEN, RED, YELLOW, RESET = "\033[1;36m", "\033[1;32m", "\033[1;31m", "\033[1;33m", "\033[0m"
 
     print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
     print(f"{GREEN}🚀 Vinzy Audit Bot [v4.0 PRO] is initializing...{RESET}")
     
     retry_delay = 5
-    
     while True:
         try:
-            # Initialize connection via String Session
             await client.start()
-            
             me = await client.get_me()
             print(f"{GREEN}✅ Authenticated as: {me.first_name} (@{me.username}){RESET}")
             print(f"{CYAN}🤖 System Status: LIVE | Monitoring MTProto Traffic...{RESET}")
             print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
             
-            # Reset delay on successful connection
             retry_delay = 5
-            
-            # This replaces infinity_polling()
-            # It keeps the bot alive and listening for events
             await client.run_until_disconnected()
 
         except Exception as e:
             err_msg = str(e)
-            
             if "Conflict" in err_msg:
                 print(f"{YELLOW}⚠️ 409 CONFLICT: Old session still active. Waiting 15s...{RESET}")
                 await asyncio.sleep(15)
@@ -1004,15 +976,12 @@ async def start_vinzy_engine():
                 print(f"{RED}⚠️ SYSTEM ERROR: {err_msg}{RESET}")
                 print(f"{CYAN}🔄 Attempting to re-connect in {retry_delay}s...{RESET}")
                 await asyncio.sleep(retry_delay)
-                
-                # Dynamic retry backoff (Max 60s)
                 retry_delay = min(retry_delay + 5, 60)
 
 if __name__ == "__main__":
     try:
-        # Start the asynchronous event loop
         asyncio.run(start_vinzy_engine())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
     except Exception as e:
         print(f"\033[1;31m❌ FATAL CRASH: {e}\033[0m")
