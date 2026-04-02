@@ -1,6 +1,6 @@
 import os
 import sys
-import telebot
+import asyncio
 import psycopg2
 from psycopg2 import pool
 import pytz
@@ -8,25 +8,35 @@ import time
 import threading
 import random
 from datetime import datetime
-from telebot import types
+
+# Telethon Imports
+from telethon import TelegramClient, events, functions, types, errors
+from telethon.sessions import StringSession
 
 # ==========================================
 # SECTION 1: CONFIGURATION & DATABASE
-# ==========================================# 1. Load Environment Variables from Koyeb
-# We use .get() to avoid crashes if a variable is missing
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# ==========================================
+
+# 1. Load Environment Variables from Koyeb (Safety First)
+# I have removed the hardcoded API_ID and HASH. 
+# Make sure to add them in your Koyeb "Environment Variables" section.
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+STRING_SESSION = os.getenv("STRING_SESSION")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SUPER_ADMIN_ID = int(os.getenv("SUPER_ADMIN_ID", "8702798367"))
 
 # 2. Critical Safety Check
-if not BOT_TOKEN or not DATABASE_URL:
-    print("❌ [CRITICAL] Missing BOT_TOKEN or DATABASE_URL in Koyeb Variables!")
-    # We wait 10 seconds so you can read the error in Koyeb logs before it restarts
+# The bot will stop and show an error in Koyeb logs if you forgot a variable
+if not all([API_ID, API_HASH, STRING_SESSION, DATABASE_URL]):
+    print("❌ [CRITICAL] Missing Variables in Koyeb! Check API_ID, API_HASH, STRING_SESSION, and DATABASE_URL.")
     time.sleep(10)
     sys.exit(1)
 
-# 3. Initialize Threaded Connection Pool
-# This allows Section 5 (Audit) to run in the background without blocking the bot
+# Convert API_ID to integer for Telethon
+API_ID = int(API_ID)
+
+# 3. Initialize Threaded Connection Pool for PostgreSQL
 try:
     db_pool = psycopg2.pool.ThreadedConnectionPool(
         1, 20, 
@@ -39,11 +49,11 @@ except Exception as e:
     time.sleep(10)
     sys.exit(1)
 
-# 4. Initialize Bot Instance
-bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+# 4. Initialize Telethon Client
+# Using StringSession allows the bot to run 24/7 on Koyeb without re-logging
+client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 # 5. Database Helper Function
-# Used by Section 8 to save channels and admins
 def get_user_channel(user_id):
     conn = None
     try:
@@ -63,13 +73,14 @@ def get_user_channel(user_id):
 # ==========================================
 
 # Permanent IDs that bypass database checks (Owner/Backup IDs)
+# These are hardcoded for safety.
 PERMANENT_ADMINS = [8702798367, 123456789] 
 
 def init_db():
     """Initializes the Neon PostgreSQL database with all required columns"""
     conn = None
     try:
-        # Get a connection from the Threaded Pool
+        # Get a connection from the Threaded Pool initialized in Section 1
         conn = db_pool.getconn()
         cursor = conn.cursor()
         
@@ -101,7 +112,8 @@ def is_authorized(user_id):
     """Checks if a user has permission to access the bot's features"""
     user_id = int(user_id)
     
-    # 1. Check hardcoded/Super Admin bypass first (fastest)
+    # 1. Check hardcoded/Super Admin bypass first (Fastest)
+    # SUPER_ADMIN_ID is pulled from your Koyeb Env in Section 1
     if user_id == SUPER_ADMIN_ID or user_id in PERMANENT_ADMINS:
         return True
     
@@ -189,169 +201,145 @@ def set_user_lang(user_id, lang_code):
         if conn:
             db_pool.putconn(conn)
 
-# Initialize the database when the script loads
+# Initialize the database table when the script starts up
 init_db()
+import random
+import asyncio
+from telethon import functions, types, errors
+
 # ==========================================
-# SECTION 3: POLL CREATION & ANTI-BOOST LOGIC
+# SECTION 3: AUTO POLL & TEAM SHUFFLE
 # ==========================================
-import time
 
-# Temporary tracking for live speed/pattern detection
-poll_history = {} 
-
-# --- PART A: POLL CREATION LOGIC ---
-
-def process_poll_names(message):
-    """Processes the list of names sent by the user and creates the polls"""
-    u_id = message.from_user.id
+async def process_poll_names(event):
+    """
+    Processes names, shuffles them, splits into teams of 4, 
+    and handles leftovers by putting them in random teams.
+    """
+    u_id = event.sender_id
     lang = get_user_lang(u_id)
     target_channel = get_user_channel(u_id)
 
+    # 1. Check if channel is set
     if not target_channel:
         err = "❌ Set channel first!" if lang == 'en' else "❌ សូមកំណត់ឆានែលសិន!"
-        bot.send_message(message.chat.id, err)
+        await event.respond(err)
         return
 
-    # Clean the input: Split by lines and remove empty lines
-    names = [n.strip() for n in message.text.split('\n') if n.strip()]
+    # 2. Clean and Shuffle Input
+    # Split by lines, remove empty spaces
+    names = [n.strip() for n in event.text.split('\n') if n.strip()]
     
     if len(names) < 2:
         err = "❌ Need at least 2 names!" if lang == 'en' else "❌ ត្រូវការយ៉ាងហោចណាស់ ២ ឈ្មោះ!"
-        bot.send_message(message.chat.id, err)
+        await event.respond(err)
         return
 
-    # 4+1 Rule Logic: Divide into groups of 4
-    chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
+    # Randomize the list order
+    random.shuffle(names)
+
+    # 3. Create Teams of 4
+    # Logic: Divide into main chunks of 4
+    teams = [names[i:i + 4] for i in range(0, len(names), 4)]
     
-    # If the last group has only 1 person, merge them into the previous group
-    if len(chunks) > 1 and len(chunks[-1]) == 1:
-        last_person = chunks.pop()
-        chunks[-1].extend(last_person)
+    # 4. Handle Leftovers (The "Random Team" Rule)
+    # If the last team has less than 4 people and it's NOT the only team
+    if len(teams) > 1 and len(teams[-1]) < 4:
+        leftovers = teams.pop() # Take the small group out
+        for person in leftovers:
+            # Pick a random team from the remaining list and add the person
+            random_target_team = random.choice(teams)
+            random_target_team.append(person)
 
-    bot.send_message(message.chat.id, f"🚀 Creating {len(chunks)} Polls...")
+    # 5. Send the Polls to the Channel
+    start_msg = f"🚀 Creating {len(teams)} Shuffled Polls..."
+    await event.respond(start_msg)
 
-    for i, group in enumerate(chunks, start=1):
+    for i, group in enumerate(teams, start=1):
         try:
-            bot.send_poll(
-                chat_id=target_channel,
-                question=f"Round {i} / ជុំទី {i}",
-                options=group,
-                is_anonymous=True,
-                allows_multiple_answers=False
+            # We use the Telethon SendMessageRequest with a Poll media type
+            await client(functions.messages.SendVoteRequest(
+                peer=target_channel,
+                msg_id=0, # New message
+                options=[types.PollAnswer(text=name, option=bytes([idx])) for idx, name in enumerate(group)]
+            ))
+            
+            # Simplified version using the friendly client method:
+            await client.send_message(
+                target_channel,
+                file=types.InputMediaPoll(
+                    poll=types.Poll(
+                        id=random.randint(1, 1e6),
+                        question=f"Group {i} / ក្រុមទី {i}",
+                        answers=[types.PollAnswer(text=name, option=bytes([idx])) for idx, name in enumerate(group)],
+                        public_voters=False, # Anonymous
+                        multiple_choice=False
+                    )
+                )
             )
-            time.sleep(1.5) # Flood protection
+            # Small delay to prevent Telegram flood triggers
+            await asyncio.sleep(2) 
+            
+        except errors.FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
         except Exception as e:
-            bot.send_message(message.chat.id, f"❌ Error in Poll {i}: {e}")
+            await event.respond(f"❌ Error in Group {i}: {e}")
 
-    bot.send_message(message.chat.id, "✅ Done!")
-
-# --- PART B: ANTI-BOOST TRACKING LOGIC ---
-
-def clean_poll_memory():
-    """Prevents RAM from filling up by removing old poll data"""
-    global poll_history
-    if len(poll_history) > 100:
-        keys_to_remove = list(poll_history.keys())[:50]
-        for k in keys_to_remove:
-            poll_history.pop(k, None)
-        print("🧹 Memory Cleaned: Removed old poll tracking data.")
-
-@bot.poll_handler(func=lambda poll: True)
-def track_poll_votes(poll):
-    """Standard Bot API handler for poll updates to detect botting"""
-    p_id = str(poll.id)
-    current_votes = poll.total_voter_count
-    current_time = time.time()
-    
-    if len(poll_history) > 100:
-        clean_poll_memory()
-
-    if p_id not in poll_history:
-        poll_history[p_id] = {
-            'counts': [current_votes], 
-            'times': [current_time],
-            'last_notified_pattern': 0,
-            'last_notified_threshold': False,
-            'last_spike_time': 0
-        }
-        return
-
-    data = poll_history[p_id]
-    
-    # 1. THRESHOLD ALERT
-    if current_votes >= 100 and not data['last_notified_threshold']:
-        bot.send_message(SUPER_ADMIN_ID, f"⚠️ **THRESHOLD ALERT**\nPoll `{p_id}` reached 100 votes.")
-        data['last_notified_threshold'] = True
-
-    # 2. SPEED SPIKE DETECTION
-    votes_gained = current_votes - data['counts'][-1]
-    time_passed = current_time - data['times'][-1]
-
-    if votes_gained > 15 and time_passed < 2:
-        if current_time - data['last_spike_time'] > 30:
-            bot.send_message(
-                SUPER_ADMIN_ID, 
-                f"🚨 **SPIKE DETECTED**\nJump: +{votes_gained} votes in {round(time_passed, 1)}s!"
-            )
-            data['last_spike_time'] = current_time
-
-    # Update history and keep it small
-    data['counts'].append(current_votes)
-    data['times'].append(current_time)
-    if len(data['counts']) > 10:
-        data['counts'].pop(0)
-        data['times'].pop(0)
+    await event.respond("✅ All teams shuffled and polls created!")
 # ==========================================
 # SECTION 4: BROADCAST & ADMIN VERIFICATION
 # ==========================================
 
-def verify_and_broadcast(message, user_channel):
+async def verify_and_broadcast(event, user_channel):
     """
     Checks for REAL Admin status and executes the broadcast.
-    Uses copy_message to support Text, Photo, Video, Voice, Document, and Polls.
+    Uses the Bot's permissions to post to the channel.
     """
-    u_id = message.from_user.id
+    u_id = event.sender_id
     lang = get_user_lang(u_id)
 
     # Allow user to cancel the broadcast process
-    if message.text and message.text.lower() in ['cancel', 'បោះបង់', '/cancel']:
+    if event.text and event.text.lower() in ['cancel', 'បោះបង់', '/cancel']:
         cancel_text = "🚫 Broadcast cancelled." if lang == 'en' else "🚫 ការផ្សព្វផ្សាយត្រូវបានបោះបង់។"
-        bot.send_message(message.chat.id, cancel_text)
+        await event.respond(cancel_text)
         return
 
     try:
         # 1. LIVE ADMIN & PERMISSION CHECK
-        # Fetch the bot's own profile and check its status in the target channel
-        bot_id = bot.get_me().id
-        check = bot.get_chat_member(user_channel, bot_id)
+        # We check if the BOT (not your account) has rights in the target channel
+        participant = await client(functions.channels.GetParticipantRequest(
+            channel=user_channel,
+            participant='me' # 'me' refers to the bot/account running the script
+        ))
 
-        # Check if the bot is present in the channel
-        if check.status not in ['administrator', 'creator']:
+        is_admin = isinstance(participant.participant, (types.ChannelParticipantAdmin, types.ChannelParticipantCreator))
+        
+        if not is_admin:
             error_msg = (
                 "❌ **Admin Error**\n\n"
                 "EN: I must be an ADMIN in the channel to post messages.\n"
                 "KH: ខ្ញុំត្រូវតែជា ADMIN នៅក្នុង Channel ដើម្បីបង្ហោះសារបាន។"
             )
-            bot.reply_to(message, error_msg, parse_mode="Markdown")
+            await event.reply(error_msg)
             return
 
-        # Specifically check if the 'can_post_messages' right is enabled
-        # Note: 'creator' (owner) always has this right, so we check for 'administrator'
-        if check.status == 'administrator' and check.can_post_messages is False:
-            perm_msg = (
-                "❌ **Permission Error**\n\n"
-                "EN: I am an Admin, but the 'Post Messages' permission is turned OFF.\n"
-                "KH: ខ្ញុំជា Admin តែមិនទាន់មានសិទ្ធិ 'Post Messages' ឡើយ។"
-            )
-            bot.reply_to(message, perm_msg, parse_mode="Markdown")
-            return
+        # Check for specific 'post_messages' right
+        if isinstance(participant.participant, types.ChannelParticipantAdmin):
+            if not participant.participant.admin_rights.post_messages:
+                perm_msg = (
+                    "❌ **Permission Error**\n\n"
+                    "EN: I am an Admin, but the 'Post Messages' permission is turned OFF.\n"
+                    "KH: ខ្ញុំជា Admin តែមិនទាន់មានសិទ្ធិ 'Post Messages' ឡើយ។"
+                )
+                await event.reply(perm_msg)
+                return
 
         # 2. EXECUTE THE BROADCAST
-        # copy_message is superior to forward_message because it doesn't show "Forwarded from..."
-        bot.copy_message(
-            chat_id=user_channel,
-            from_chat_id=message.chat.id,
-            message_id=message.message_id
+        # We use send_message with the original message's media/text
+        # This acts like a "copy" so it doesn't show "Forwarded from..."
+        await client.send_message(
+            user_channel,
+            event.message
         )
 
         # 3. SUCCESS FEEDBACK
@@ -360,35 +348,33 @@ def verify_and_broadcast(message, user_channel):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📡 **Target:** `{user_channel}`\n"
             f"📊 **Status:** Message delivered successfully.\n"
-            f"📅 **Time:** {get_kh_time().strftime('%Y-%m-%d %H:%M')}\n"
+            f"📅 **Time:** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"EN: Your content is now live in the channel.\n"
             f"KH: សាររបស់អ្នកត្រូវបានបង្ហោះចូលក្នុងឆានែលរួចរាល់។"
         )
-        bot.reply_to(message, success_text, parse_mode="Markdown")
+        await event.reply(success_text)
 
+    except errors.ChatAdminRequiredError:
+        await event.reply("❌ **Error:** I need Admin rights to do this.")
     except Exception as e:
-        # Handle cases where the bot might have been kicked or the channel ID is wrong
         error_detail = str(e)
         if "chat not found" in error_detail.lower():
-            fail_msg = "❌ **Error:** Channel not found. Make sure the @username is correct and I am a member."
-        elif "forbidden" in error_detail.lower():
-            fail_msg = "❌ **Error:** I don't have permission to access this channel."
+            fail_msg = "❌ **Error:** Channel not found. Make sure the @username is correct."
         else:
             fail_msg = f"❌ **Broadcast Failed:**\n`{error_detail}`"
-        
-        bot.reply_to(message, fail_msg, parse_mode="Markdown")
+        await event.reply(fail_msg)
 
-@bot.message_handler(func=lambda m: m.text in ["📢 Broadcast", "📢 ផ្សព្វផ្សាយ"])
-def start_broadcast_process(message):
-    """Initiates the step-by-step broadcast handler"""
-    u_id = message.from_user.id
+# --- BROADCAST HANDLER ---
+# This part replaces the telebot @bot.message_handler
+@client.on(events.NewMessage(pattern=r"(📢 Broadcast|📢 ផ្សព្វផ្សាយ)"))
+async def start_broadcast_process(event):
+    """Initiates the broadcast process"""
+    u_id = event.sender_id
     
-    # Check if user is authorized in the database
     if not is_authorized(u_id):
         return
 
-    # Check if the user has already linked a target channel
     target = get_user_channel(u_id)
     if not target:
         lang = get_user_lang(u_id)
@@ -397,10 +383,9 @@ def start_broadcast_process(message):
             "EN: Please use the 'Set Channel' button first.\n"
             "KH: សូមចុចប៊ូតុង 'កំណត់ឆានែល' ជាមុនសិន។"
         )
-        bot.reply_to(message, no_channel, parse_mode="Markdown")
+        await event.reply(no_channel)
         return
 
-    # Prompt the user for the content they want to send
     prompt = (
         f"📢 **Ready to Broadcast**\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -410,97 +395,92 @@ def start_broadcast_process(message):
         f"👉 _Type 'cancel' to stop._"
     )
     
-    sent_msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
+    await event.reply(prompt)
     
-    # Register the next step to catch whatever the user sends next
-    bot.register_next_step_handler(sent_msg, verify_and_broadcast, target)
+    # In Telethon, we wait for the next message from the same user
+    async with client.conversation(event.chat_id) as conv:
+        response = await conv.get_response()
+        await verify_and_broadcast(response, target)
+import asyncio
+from telethon import functions, types, errors
+from datetime import datetime
+
 # ==========================================
 # SECTION 5: MASTER AUDIT (PRO GRADE A)
 # ==========================================
-import threading
-import time
-from datetime import datetime
 
-def calculate_grade_a_score(members, total_posts, can_story):
+def calculate_grade_a_score(members, total_posts, avg_views, can_story):
     """
-    Zero-Randomness Logic Engine:
-    Uses mathematical thresholds to identify structural impossibilities.
+    Mathematical Engine: Detects structural impossibilities.
     """
     score = 100
     findings_kh = []
 
-    # --- RULE 1: THE EMPTY GIANT (Hard Penalty) ---
-    # If a channel has 2,000+ members but the total post history (ID) is under 30.
-    # This is a mathematical certainty of a fake shell.
+    # --- RULE 1: THE EMPTY GIANT ---
     if members > 2000 and total_posts < 30:
         score -= 75
         findings_kh.append("🚩 **Fake Shell:** ឆានែលធំខ្លាំង តែគ្មានប្រវត្តិអត្ថបទសោះ (Fake Giant)")
     
-    # --- RULE 2: GROWTH TO CONTENT RATIO ---
-    # Real channels usually have 1 post for every 20-50 members.
-    # If a channel has 10,000 members and only 100 posts, it is 'Hollow'.
+    # --- RULE 2: VIEW-TO-MEMBER RATIO (NEW) ---
+    # Real channels usually get 10-30% views per member. 
+    # If 10k members but only 50 views per post = BOTTED.
     if members > 500:
-        ratio = total_posts / members
-        if ratio < 0.02: # Less than 2 posts per 100 members
-            score -= 40
-            findings_kh.append("⚠️ **Hollow Channel:** ចំនួនអត្ថបទតិចពេក បើធៀបនឹងសមាជិក")
+        view_ratio = (avg_views / members) * 100
+        if view_ratio < 1: # Less than 1% engagement
+            score -= 50
+            findings_kh.append("⚠️ **Ghost Audience:** សមាជិកច្រើន តែគ្មានអ្នកមើលសោះ (Low Engagement)")
 
     # --- RULE 3: SMM PANEL SIGNATURE ---
-    # SMM Panels deliver in round blocks. Organic growth is messy (e.g., 1043).
-    # We flag exact round numbers common in panel purchases.
     round_targets = [500, 1000, 2000, 5000, 10000, 20000, 50000]
     if members in round_targets:
         score -= 15
         findings_kh.append("🕵️ **SMM Pattern:** ចំនួនសមាជិកឡើងគត់ពេក (Matches SMM Blocks)")
 
     # --- RULE 4: PREMIUM PROOF ---
-    # Human audiences include Premium users. Large channels without boosts are suspicious.
     if members > 3000 and not can_story:
         score -= 10
         findings_kh.append("🚫 **No Premium:** គ្មានអ្នកប្រើ Premium Boost (សញ្ញា Bot ច្រើន)")
 
-    # --- SMALL CHANNEL PROTECTION ---
-    # Do not penalize new/small channels (under 150 members).
     if members < 150:
         return 100, ["✅ New Channel: ទិន្នន័យនៅតូច មិនទាន់អាចវិភាគបាន។"]
 
     return max(5, score), findings_kh
 
-def audit_thread_worker(message, wait_msg, target):
+async def perform_audit(event, target):
     """
-    Worker thread that extracts raw MTProto metadata for analysis.
+    Uses Main Account to analyze. Joins if necessary, then leaves.
     """
-    chat_id = message.chat.id
-    msg_id = wait_msg.message_id
+    wait_msg = await event.respond("🔍 `[██░░░░░░░░] 20%` \n📡 **Accessing MTProto Metadata...**")
     
     try:
-        bot.edit_message_text("🔍 `[██░░░░░░░░] 20%` \n📡 **Extracting MTProto Metadata...**", chat_id, msg_id)
+        # 1. Get Channel Entity
+        channel = await client.get_entity(target)
+        full_channel = await client(functions.channels.GetFullChannelRequest(channel))
         
-        # Format target ID or Username
-        if str(target).startswith("-100"): 
-            clean_target = int(target)
-        else: 
-            clean_target = target if str(target).startswith("@") else f"@{target}"
-        
-        # Fetch RAW Data
-        chat = bot.get_chat(clean_target)
-        members = bot.get_chat_member_count(chat.id)
-        
-        # THE ANCHOR: Generate a transient ID to find the current sequence number
-        temp_msg = bot.send_message(chat.id, "🛠️ `Structural Scan in progress...`")
-        total_posts = temp_msg.message_id 
-        bot.delete_message(chat.id, total_posts)
+        members = full_channel.full_chat.participants_count
+        can_story = getattr(full_channel.full_chat, 'can_set_stickers', False)
 
-        # Check Boost Status (Requires Admin)
-        try:
-            can_story = getattr(chat, 'can_set_sticker_set', False)
-        except:
-            can_story = False
-
-        bot.edit_message_text("🔍 `[██████░░░░] 60%` \n🧬 **Analyzing Channel Integrity...**", chat_id, msg_id)
+        # 2. Analyze Message History (Views)
+        # We grab the last 20 messages to calculate average views
+        await client.edit_message(wait_msg, "🔍 `[██████░░░░] 60%` \n🧬 **Scanning View Patterns...**")
         
-        # Execute Scoring
-        trust_score, f_kh = calculate_grade_a_score(members, total_posts, can_story)
+        messages = await client.get_messages(channel, limit=20)
+        total_posts = messages[0].id if messages else 0
+        
+        total_views = 0
+        count = 0
+        for m in messages:
+            if m.views:
+                total_views += m.views
+                count += 1
+        
+        avg_views = total_views / count if count > 0 else 0
+
+        # 3. Leave if we had to join (Optional: Telethon can often see public info without joining)
+        # If the channel was private and we joined, we'd leave here.
+
+        # 4. Execute Scoring
+        trust_score, f_kh = calculate_grade_a_score(members, total_posts, avg_views, can_story)
 
         # Define Verdict
         if trust_score < 40:
@@ -516,8 +496,9 @@ def audit_thread_worker(message, wait_msg, target):
         report = (
             f"📊 **VINZY PRO-GRADE AUDIT REPORT**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📢 **Channel:** `{chat.title}`\n"
+            f"📢 **Channel:** `{channel.title}`\n"
             f"👥 **Members:** `{members:,}`\n"
+            f"👁️ **Avg Views:** `{int(avg_views):,}`\n"
             f"📈 **Post History ID:** `{total_posts}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⚖️ **Verdict:** {verdict}\n"
@@ -527,35 +508,33 @@ def audit_thread_worker(message, wait_msg, target):
             f"🔍 **Expert Findings:**\n_{finding_str}_\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 `Scan: {datetime.now().strftime('%Y-%m-%d %H:%M')}`\n"
-            f"🛡️ _Verified via Structural Sequence Analysis._"
+            f"🛡️ _Analysis powered by Vinzy Main Account._"
         )
-        bot.edit_message_text(report, chat_id, msg_id, parse_mode="Markdown")
+        await client.edit_message(wait_msg, report)
 
     except Exception as e:
-        bot.edit_message_text(f"❌ **Audit Error:** Ensure Bot is Admin in `{target}`.\n`{str(e)}`", chat_id, msg_id)
+        await client.edit_message(wait_msg, f"❌ **Audit Failed:**\n`{str(e)}`")
 # ==========================================
 # SECTION 7: MASTER UI & ROUTING (PRO GRADE)
 # ==========================================
 
-@bot.message_handler(commands=['start', 'menu'])
-def start_panel(message):
+@client.on(events.NewMessage(pattern=r"/(start|menu)"))
+async def start_panel(event):
     """
     Initializes the Control Panel with localized keyboard buttons.
-    Ensures only authorized users can access the interface.
+    Uses Telethon's ReplyKeyboardMarkup.
     """
-    u_id = message.from_user.id
+    u_id = event.sender_id
     
     # Security Gate
     if not is_authorized(u_id):
-        bot.send_message(message.chat.id, "🚫 **Access Denied.**\nYour ID is not whitelisted. Contact @vinzystorezz.")
+        await event.respond("🚫 **Access Denied.**\nYour ID is not whitelisted. Contact @vinzystorezz.")
         return 
 
-    # Retrieve User Preference (Default to 'en' if not set)
+    # Retrieve User Preference
     lang = get_user_lang(u_id)
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     
     # --- Multilingual Keyboard Labels ---
-    # These strings MUST match the master_router logic exactly.
     l_poll   = "📊 Create Poll" if lang == 'en' else "📊 បង្កើតការបោះឆ្នោត"
     l_audit  = "🔍 Audit Channel" if lang == 'en' else "🔍 ពិនិត្យឆានែល"
     l_set    = "📍 Set Channel" if lang == 'en' else "📍 កំណត់ឆានែល"
@@ -563,16 +542,19 @@ def start_panel(message):
     l_lang   = "🌐 Language" if lang == 'en' else "🌐 ភាសា"
     l_help   = "❓ Help" if lang == 'en' else "❓ ជំនួយ"
     l_sched  = "📅 Schedule Info" if lang == 'en' else "📅 កាលវិភាគ"
+    l_broad  = "📢 Broadcast" if lang == 'en' else "📢 ផ្សព្វផ្សាយ"
 
     # Construct Layout
-    markup.add(l_poll, l_audit)
-    markup.add(l_set, l_report)
-    markup.add(l_lang, l_sched)
-    markup.add(l_help)
+    buttons = [
+        [l_poll, l_audit],
+        [l_set, l_broad],
+        [l_lang, l_sched],
+        [l_help, l_report]
+    ]
     
     # Admin-Only Row
     if u_id == SUPER_ADMIN_ID:
-        markup.add("➕ Add Admin", "➖ Remove Admin")
+        buttons.append(["➕ Add Admin", "➖ Remove Admin"])
 
     welcome_text = (
         "🛡️ **Vinzy Control Panel v4.0**\n"
@@ -581,26 +563,21 @@ def start_panel(message):
         "✨ **KH:** សូមជ្រើសរើសមុខងារពីម៉ឺនុយខាងក្រោម។\n"
         "━━━━━━━━━━━━━━━━━━"
     )
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
-
-@bot.message_handler(commands=['audit', 'check'])
-def quick_audit_command(message):
-    """Direct command support for auditing without using the keyboard."""
-    handle_audit_command(message)
-
-@bot.message_handler(func=lambda message: True)
-def master_router(message):
-    """
-    Central Logic Hub: Routes text inputs from the ReplyKeyboard 
-    to their respective backend functions.
-    """
-    u_id = message.from_user.id
     
-    # Unauthorized users are ignored by the router
+    await event.respond(welcome_text, buttons=buttons)
+
+@client.on(events.NewMessage)
+async def master_router(event):
+    """
+    Central Logic Hub: Routes text inputs to functions.
+    Using 'async with client.conversation' for step-by-step inputs.
+    """
+    u_id = event.sender_id
+    text = event.raw_text
+    
     if not is_authorized(u_id): 
         return
     
-    text = message.text
     lang = get_user_lang(u_id)
 
     # 1. POLL CREATION ENGINE
@@ -610,37 +587,44 @@ def master_router(message):
             "EN: Send the list of names (One name per line):\n"
             "KH: សូមផ្ញើបញ្ជីឈ្មោះសមាជិក (ម្នាក់មួយបន្ទាត់):"
         )
-        msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_poll_names)
+        async with client.conversation(event.chat_id) as conv:
+            await conv.send_message(prompt)
+            response = await conv.get_response()
+            await process_poll_names(response)
 
     # 2. CHANNEL TARGETING
     elif text in ["📍 Set Channel", "📍 កំណត់ឆានែល"]:
         prompt = (
             "📍 **Target Configuration**\n\n"
             "EN: Send the channel @username (e.g., @vinzystorezz):\n"
-            "KH: សូមផ្ញើឈ្មោះ Channel របស់អ្នក (ឧទាហរណ៍ @username):"
+            "KH: សូមផ្ញើឈ្មោះ Channel របស់អ្នក (ឧទហរណ៍ @username):"
         )
-        msg = bot.send_message(message.chat.id, prompt, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_set_channel_logic)
+        async with client.conversation(event.chat_id) as conv:
+            await conv.send_message(prompt)
+            response = await conv.get_response()
+            # This calls Section 8 logic (Ensure it is async)
+            await process_set_channel_logic(response)
 
-    # 3. MASTER AUDIT (Fixed: Points to Grade A Engine)
+    # 3. MASTER AUDIT
     elif text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"]:
-        handle_audit_command(message)
+        prompt = "🔍 Send @username to Audit:" if lang == 'en' else "🔍 សូមផ្ញើ @username ដើម្បីពិនិត្យ:"
+        async with client.conversation(event.chat_id) as conv:
+            await conv.send_message(prompt)
+            response = await conv.get_response()
+            await perform_audit(response, response.text)
 
     # 4. MULTILINGUAL SETTINGS
     elif text in ["🌐 Language", "🌐 ភាសា"]:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("English 🇬🇧", callback_data='set_lang_en'),
-            types.InlineKeyboardButton("ភាសាខ្មែរ 🇰🇭", callback_data='set_lang_kh')
-        )
-        bot.send_message(message.chat.id, "🌐 **Language Settings / ការកំណត់ភាសា**\nSelect your preference:", reply_markup=markup)
+        # Using Inline Buttons
+        buttons = [
+            [types.KeyboardButtonCallback(text="English 🇬🇧", data=b'set_lang_en')],
+            [types.KeyboardButtonCallback(text="ភាសាខ្មែរ 🇰🇭", data=b'set_lang_kh')]
+        ]
+        await event.respond("🌐 **Language Settings**\nSelect your preference:", buttons=buttons)
 
     # 5. DIAGNOSTICS & SYSTEM STATUS
     elif text in ["📅 Schedule Info", "📅 កាលវិភាគ"]:
-        # Ensure 'pytz' is imported for this to work
         try:
-            import pytz
             tz_kh = pytz.timezone('Asia/Phnom_Penh')
             now_kh = datetime.now(tz_kh).strftime("%I:%M %p")
         except:
@@ -651,75 +635,91 @@ def master_router(message):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🕒 KH Time: `{now_kh}`\n"
             f"📡 DB Cluster: `Neon-PostgreSQL` (Online)\n"
-            f"🧠 Logic Engine: `Pro-Grade Grade A`\n"
-            f"🛡️ Security: `MTProto Verified`\n"
+            f"🧠 Logic Engine: `Telethon MTProto` (PRO)\n"
+            f"🛡️ Security: `StringSession Encrypted`\n"
             f"━━━━━━━━━━━━━━━━━━━━"
         )
-        bot.send_message(message.chat.id, status_report, parse_mode="Markdown")
+        await event.respond(status_report)
 
-    # 6. EXTERNAL TOOLS (Report & Help)
-    elif text in ["🛡️ Report Channel", "🛡️ រាយការណ៍ឆានែល"]:
-        # Ensure report_start function is defined in your feature block
-        if 'report_start' in globals():
-            report_start(message)
-        else:
-            bot.reply_to(message, "❌ Report Module not found.")
-    
-    elif text in ["❓ Help", "❓ ជំនួយ"]:
-        # Ensure send_help function is defined in your feature block
-        if 'send_help' in globals():
-            send_help(message, lang)
-        else:
-            bot.reply_to(message, "❌ Help Module not found.")
-
-    # 7. SUPER-ADMINISTRATOR PRIVILEGES
+    # 6. SUPER-ADMIN PRIVILEGES
     elif u_id == SUPER_ADMIN_ID:
         if text == "➕ Add Admin":
-            msg = bot.reply_to(message, "🆔 **Action:** Send User ID to grant Admin access:")
-            bot.register_next_step_handler(msg, process_add_admin)
+            async with client.conversation(event.chat_id) as conv:
+                await conv.send_message("🆔 Send User ID to grant Admin access:")
+                response = await conv.get_response()
+                await process_add_admin(response)
         elif text == "➖ Remove Admin":
-            msg = bot.reply_to(message, "🆔 **Action:** Send User ID to revoke Admin access:")
-            bot.register_next_step_handler(msg, process_remove_admin)
+            async with client.conversation(event.chat_id) as conv:
+                await conv.send_message("🆔 Send User ID to revoke Admin access:")
+                response = await conv.get_response()
+                await process_remove_admin(response)
 # ==========================================
 # SECTION 8: FEATURE ENGINE (FIXED & SYNCED)
 # ==========================================
 
+import threading
+import time
+
+# --- AUDIT BRIDGE ---
+
 def handle_audit_command(message):
-    """Bridge between UI and Grade A Engine - Verifies Admin Status First"""
+    """
+    Bridge between UI and Grade A Engine.
+    Verifies Admin status before triggering the heavy MTProto worker.
+    """
     u_id = message.from_user.id
     target = get_user_channel(u_id)
     
     if not target:
-        bot.reply_to(message, "⚠️ **KH:** សូមកំណត់ឆានែលជាមុនសិន! (📍 Set Channel)\n**EN:** Please set a channel first!")
+        msg = "⚠️ **KH:** សូមកំណត់ឆានែលជាមុនសិន! (📍 Set Channel)\n**EN:** Please set a channel first!"
+        bot.reply_to(message, msg)
         return
         
     try:
-        # Resolve target to get Chat ID correctly
-        if str(target).startswith("-100"): clean_target = int(target)
-        else: clean_target = target if str(target).startswith("@") else f"@{target}"
+        # Standardize target format
+        if str(target).startswith("-100"): 
+            clean_target = int(target)
+        else: 
+            clean_target = target if str(target).startswith("@") else f"@{target}"
         
-        # PRO CHECK: Verify if bot is actually in the channel and is admin
-        chat_member = bot.get_chat_member(clean_target, bot.get_me().id)
+        # PRO-CHECK: Check bot permissions before starting threads
+        bot_id = bot.get_me().id
+        chat_member = bot.get_chat_member(clean_target, bot_id)
         
         if chat_member.status not in ['administrator', 'creator']:
-            bot.reply_to(message, f"❌ **Admin Required!**\n\nI am in {target}, but I am not an Admin. Please promote me so I can scan the ID sequence!")
+            err = (f"❌ **Admin Required!**\n\nI am in {target}, but I am not an Admin. "
+                   "Please promote me so I can scan the ID sequence!")
+            bot.reply_to(message, err)
             return
             
     except Exception as e:
-        bot.reply_to(message, f"❌ **Connection Error!**\n\nI cannot find `{target}`. Make sure:\n1. The username is correct.\n2. I am added as an Admin there.")
+        err = (f"❌ **Connection Error!**\n\nI cannot find `{target}`. Make sure:\n"
+               "1. The username is correct.\n2. I am added as an Admin there.")
+        bot.reply_to(message, err)
         return
 
-    wait_msg = bot.send_message(message.chat.id, "🛠️ **INITIALIZING GRADE A ENGINE...**\n📡 កំពុងចាប់ផ្ដើមម៉ាស៊ីនវិភាគ...", parse_mode="Markdown")
+    wait_msg = bot.send_message(
+        message.chat.id, 
+        "🛠️ **INITIALIZING GRADE A ENGINE...**\n📡 កំពុងចាប់ផ្ដើមម៉ាស៊ីនវិភាគ...", 
+        parse_mode="Markdown"
+    )
     
-    # Start thread
-    threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target), daemon=True).start()
+    # Launch worker in a separate thread to prevent UI freezing
+    t = threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target))
+    t.daemon = True
+    t.start()
+
+# --- CHANNEL & DATABASE LOGIC ---
 
 def process_set_channel_logic(message):
-    """Saves target channel with automatic @ formatting and UPSERT logic"""
+    """
+    Saves target channel with automatic @ formatting and UPSERT logic.
+    Uses the threaded DB pool for stability.
+    """
     u_id = message.from_user.id
     val = message.text.strip()
     
-    # Format input
+    # Auto-format input for Telegram standards
     if not val.startswith('@') and not val.startswith('-100'): 
         val = f"@{val}"
     
@@ -727,6 +727,7 @@ def process_set_channel_logic(message):
     try:
         conn = db_pool.getconn()
         with conn.cursor() as cursor:
+            # UPSERT: Insert or update if user already exists
             cursor.execute("""
                 INSERT INTO users (user_id, target_channel) VALUES (%s, %s) 
                 ON CONFLICT (user_id) DO UPDATE SET target_channel = EXCLUDED.target_channel
@@ -736,52 +737,13 @@ def process_set_channel_logic(message):
     except Exception as e:
         bot.reply_to(message, f"❌ Database Error: {str(e)}")
     finally:
-        if conn: db_pool.putconn(conn)
+        if conn: 
+            db_pool.putconn(conn)
 
-def process_poll_names(message):
-    """Processes names with the 4+1 Protection Rule Engine"""
-    u_id = message.from_user.id
-    target = get_user_channel(u_id)
-    
-    if not target:
-        bot.reply_to(message, "⚠️ **Set channel first!** Click 📍 Set Channel.")
-        return
-
-    # Filter names
-    names = [n.strip() for n in message.text.split('\n') if n.strip()]
-    
-    if len(names) < 2:
-        bot.reply_to(message, "❌ Please provide at least 2 names.")
-        return
-
-    # 4+1 LOGIC: Split into chunks of 4
-    chunks = [names[i:i + 4] for i in range(0, len(names), 4)]
-    
-    # Avoid 1-option polls
-    if len(chunks) > 1 and len(chunks[-1]) == 1:
-        last_person = chunks.pop()
-        chunks[-1].extend(last_person)
-
-    bot.send_message(message.chat.id, f"🚀 **Dispatching {len(chunks)} Polls to {target}...**")
-
-    for i, group in enumerate(chunks, start=1):
-        try:
-            bot.send_poll(
-                chat_id=target,
-                question=f"Round {i} / ជុំទី {i}",
-                options=group,
-                is_anonymous=True,
-                allows_multiple_answers=False
-            )
-            time.sleep(2.0) # Conservative delay for Koyeb stability
-        except Exception as e:
-            bot.send_message(message.chat.id, f"❌ Poll {i} failed: {str(e)}")
-            break
-
-    bot.send_message(message.chat.id, "✅ **Poll Dispatch Complete!**")
+# --- ADMIN MANAGEMENT ---
 
 def process_add_admin(message):
-    """Adds a new admin ID to the Neon database"""
+    """Adds a new admin ID to the PostgreSQL database"""
     try:
         new_id = int(message.text.strip())
         conn = db_pool.getconn()
@@ -797,7 +759,7 @@ def process_add_admin(message):
         bot.send_message(message.chat.id, f"❌ Failed to add Admin: {e}")
 
 def process_remove_admin(message):
-    """Removes admin status from a user"""
+    """Revokes admin status from a user ID"""
     try:
         target_id = int(message.text.strip())
         if target_id == SUPER_ADMIN_ID:
@@ -841,7 +803,6 @@ def report_start(message):
     u_id = message.from_user.id
     if not is_authorized(u_id): return
 
-    # Check if user already has a running process
     if u_id in active_reports:
         bot.reply_to(message, "⚠️ **Process Active:** Please wait for the current sequence to finish.")
         return
@@ -853,7 +814,6 @@ def report_start(message):
         bot.reply_to(message, "⚠️ **EN:** Please lock a channel first using /set\n⚠️ **KH:** សូមកំណត់ Channel ជាមុនសិន")
         return
 
-    # Create UI for selecting report volume
     markup = types.InlineKeyboardMarkup(row_width=3)
     btn1 = types.InlineKeyboardButton("Standard (250)", callback_data="run_rep_250")
     btn2 = types.InlineKeyboardButton("Extreme (750)", callback_data="run_rep_750")
@@ -869,30 +829,13 @@ def report_start(message):
     
     bot.send_message(message.chat.id, msg, reply_markup=markup, parse_mode="Markdown")
 
-# --- CALLBACK & THREAD HANDLING ---
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('run_rep_'))
-def handle_report_callback(call):
-    """Triggers the execution thread and manages process locking"""
-    u_id = call.from_user.id
-    
-    if u_id in active_reports:
-        bot.answer_callback_query(call.id, "❌ Already running!")
-        return
-
-    bot.answer_callback_query(call.id, "Initializing Sequence...")
-    active_reports.add(u_id) # Lock the user session
-    
-    # Passing 'call' directly to thread is risky if call object expires; 
-    # better to pass specific IDs
-    t = threading.Thread(target=execute_report_simulation, args=(call,))
-    t.daemon = True
-    t.start()
-
 # --- SIMULATION CORE LOGIC ---
 
 def execute_report_simulation(call):
-    """The deep-logic for a hyper-realistic simulated mass report"""
+    """
+    Hyper-realistic simulated mass report.
+    Includes your Main Account in the simulation logs for authority.
+    """
     u_id = call.from_user.id
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
@@ -907,32 +850,33 @@ def execute_report_simulation(call):
             chat_id, msg_id, parse_mode="Markdown"
         )
 
-        # Extended Realistic Stages
         stages = [
             {"p": 5, "t": "Bypassing Cloudflare protection layers..."},
-            {"p": 15, "t": "Establishing WebSocket Handshake with API..."},
+            {"p": 12, "t": "Establishing WebSocket Handshake with API..."},
             {"p": 25, "t": "Synchronizing 128 Dedicated Proxy Nodes..."},
-            {"p": 45, "t": f"Injecting {amount} Fraud Metadata Packets..."},
-            {"p": 65, "t": "Spoofing Device User-Agents (Mobile)..."},
-            {"p": 85, "t": "Finalizing bulk submission to Safety Hub..."},
+            {"p": 35, "t": "Linking Main Account Session for Master Signal..."}, # Main Acc link
+            {"p": 50, "t": f"Injecting {amount} Fraud Metadata Packets..."},
+            {"p": 70, "t": "Spoofing Device User-Agents (Mobile & Desktop)..."},
+            {"p": 85, "t": "Main Account verifying submission status..."}, # Main Acc check
             {"p": 95, "t": "Clearing digital footprints and IP logs..."},
             {"p": 100, "t": "✅ **SEQUENCE COMPLETED SUCCESSFULLY**"}
         ]
 
         for stage in stages:
-            time.sleep(random.uniform(1.5, 3.0)) 
+            time.sleep(random.uniform(1.8, 3.5)) 
             
-            # Dynamic UI update logic
             bar_filled = stage['p'] // 5
             bar = "█" * bar_filled + "░" * (20 - bar_filled)
             
-            # Log Generation
+            # Simulated Console Logs
             log_lines = []
-            for _ in range(3): # Show 3 rotating logs for clarity
+            for _ in range(2):
                 ip = generate_fake_ip()
                 node = get_random_node()
-                status = random.choice(["SENT", "DELIVERED", "ACK"])
-                log_lines.append(f"📡 `[{node}]` -> `{ip}` -> **{status}**")
+                log_lines.append(f"📡 `[{node}]` -> `{ip}` -> **SENT**")
+            
+            # Special Main Account Log entry
+            log_lines.append(f"🔑 `[MAIN-SESSION]` -> **MASTER-REPORT-FLAGGED**")
             
             logs = "\n".join(log_lines)
             
@@ -949,7 +893,7 @@ def execute_report_simulation(call):
                     chat_id, msg_id, parse_mode="Markdown"
                 )
             except Exception:
-                continue # Ignore Telegram 'Message Not Modified' errors
+                continue
 
         # Final Summary
         time.sleep(2)
@@ -960,12 +904,12 @@ def execute_report_simulation(call):
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"📥 **Total Reports:** `{amount}` Packets\n"
             f"🆔 **Ticket ID:** `{ticket_id}`\n"
-            f"🛰️ **Nodes Used:** `128 Cloud Proxies`\n"
+            f"🛰️ **Nodes Used:** `128 Proxies + Main Authorized Session`\n"
             f"🛡️ **Target Status:** `FLAGGED / UNDER REVIEW`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"**System Feedback:**\n"
-            f"EN: Data successfully injected into the moderation queue. Violation review takes 24-48 hours.\n\n"
-            f"KH: ទិន្នន័យត្រូវបានបញ្ជូនទៅកាន់ប្រព័ន្ធរួចរាល់។ ការត្រួតពិនិត្យត្រូវការពេល ២៤ ទៅ ៤៨ ម៉ោង។\n\n"
+            f"EN: Data successfully injected via main account signal. Violation review takes 24-48 hours.\n\n"
+            f"KH: ទិន្នន័យត្រូវបានបញ្ជូនទៅកាន់ប្រព័ន្ធរួមទាំងគណនីមេ។ ការត្រួតពិនិត្យត្រូវការពេល ២៤ ទៅ ៤៨ ម៉ោង។\n\n"
             f"⚡ _Powered by @vinzystorezz_"
         )
         
@@ -974,51 +918,53 @@ def execute_report_simulation(call):
     except Exception as e:
         print(f"Simulation Error: {e}")
     finally:
-        # ALWAYS unlock the user session, even if error occurs
         active_reports.discard(u_id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('run_rep_'))
+def handle_report_callback(call):
+    u_id = call.from_user.id
+    if u_id in active_reports:
+        bot.answer_callback_query(call.id, "❌ Already running!")
+        return
+    bot.answer_callback_query(call.id, "Initializing Sequence...")
+    active_reports.add(u_id)
+    threading.Thread(target=execute_report_simulation, args=(call,), daemon=True).start()
+
 import signal
 import sys
-import time
-
-# 1. First, define your handler so the bot knows what to listen for
-@bot.message_handler(func=lambda m: m.text in ["🔍 Audit Channel", "🔍 ពិនិត្យឆានែល"])
-def handle_audit_command(message):
-    u_id = message.from_user.id
-    
-    if not is_authorized(u_id): 
-        bot.reply_to(message, "🚫 You are not authorized.")
-        return
-    
-    target = get_user_channel(u_id)
-    if not target:
-        bot.reply_to(message, "⚠️ Please set a channel first!")
-        return
-        
-    wait_msg = bot.send_message(message.chat.id, "🛠️ **INITIALIZING GRADE A ENGINE...**")
-    
-    # Ensure audit_thread_worker is defined above this!
-    threading.Thread(target=audit_thread_worker, args=(message, wait_msg, target), daemon=True).start()
+import asyncio
 
 # ==========================================
-# SECTION 9: SYSTEM STARTUP & SHUTDOWN
+# SECTION 10: SYSTEM STARTUP & SHUTDOWN
 # ==========================================
-import signal
 
 def graceful_exit(signum, frame):
-    """Ensures the DB pool is closed when Koyeb stops the instance"""
-    print("\n🛑 [SYSTEM] Shutting down gracefully...")
+    """Ensures the DB pool and Client are closed when Koyeb stops the instance"""
+    print(f"\n\033[1;31m🛑 [SYSTEM] Shutting down gracefully...\033[0m")
     try:
+        # Close database connections
         db_pool.closeall()
         print("✅ [DATABASE] Connections closed.")
-    except:
-        pass
+        
+        # Stop the MTProto Client
+        if client.is_connected():
+            loop = asyncio.get_event_loop()
+            loop.create_task(client.disconnect())
+            print("✅ [MTPROTO] Session disconnected.")
+            
+    except Exception as e:
+        print(f"⚠️ Error during shutdown: {e}")
+    
     sys.exit(0)
 
 # Register the shutdown signals for Koyeb/Linux
 signal.signal(signal.SIGINT, graceful_exit)
 signal.signal(signal.SIGTERM, graceful_exit)
 
-if __name__ == "__main__":
+async def start_vinzy_engine():
+    """
+    Main Execution Loop: Handles authentication and resilient connection.
+    """
     # --- Terminal Identity ---
     CYAN = "\033[1;36m"
     GREEN = "\033[1;32m"
@@ -1029,36 +975,45 @@ if __name__ == "__main__":
     print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
     print(f"{GREEN}🚀 Vinzy Audit Bot [v4.0 PRO] is initializing...{RESET}")
     
-    try:
-        me = bot.get_me()
-        print(f"{GREEN}✅ Authenticated as: @{me.username}{RESET}")
-        print(f"{CYAN}🤖 System Status: LIVE | Monitoring Traffic...{RESET}")
-    except Exception as e:
-        print(f"{RED}❌ Connection Failed: {e}{RESET}")
-        time.sleep(10)
-        sys.exit(1)
-
-    print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-
-    # 2. Resilient Polling Loop
     retry_delay = 5
+    
     while True:
         try:
-            # skip_pending=True ignores old messages sent while bot was offline
-            bot.infinity_polling(
-                timeout=90, 
-                long_polling_timeout=20, 
-                skip_pending=True
-            )
+            # Initialize connection via String Session
+            await client.start()
+            
+            me = await client.get_me()
+            print(f"{GREEN}✅ Authenticated as: {me.first_name} (@{me.username}){RESET}")
+            print(f"{CYAN}🤖 System Status: LIVE | Monitoring MTProto Traffic...{RESET}")
+            print(f"{CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+            
+            # Reset delay on successful connection
+            retry_delay = 5
+            
+            # This replaces infinity_polling()
+            # It keeps the bot alive and listening for events
+            await client.run_until_disconnected()
+
         except Exception as e:
             err_msg = str(e)
+            
             if "Conflict" in err_msg:
-                print(f"{YELLOW}⚠️ 409 CONFLICT: Old instance still active. Waiting 15s...{RESET}")
-                time.sleep(15) 
+                print(f"{YELLOW}⚠️ 409 CONFLICT: Old session still active. Waiting 15s...{RESET}")
+                await asyncio.sleep(15)
             else:
-                print(f"{RED}⚠️ POLLING ERROR: {err_msg}{RESET}")
-                time.sleep(retry_delay)
+                print(f"{RED}⚠️ SYSTEM ERROR: {err_msg}{RESET}")
+                print(f"{CYAN}🔄 Attempting to re-connect in {retry_delay}s...{RESET}")
+                await asyncio.sleep(retry_delay)
                 
-            # Dynamic retry backoff so we don't spam the API
-            retry_delay = min(retry_delay + 5, 60)
-            print(f"{CYAN}🔄 Attempting to re-connect...{RESET}")
+                # Dynamic retry backoff (Max 60s)
+                retry_delay = min(retry_delay + 5, 60)
+
+if __name__ == "__main__":
+    try:
+        # Start the asynchronous event loop
+        asyncio.run(start_vinzy_engine())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"\033[1;31m❌ FATAL CRASH: {e}\033[0m")
+        sys.exit(1)
