@@ -5,8 +5,10 @@ import asyncio
 import random
 import psycopg2
 from psycopg2 import pool
+
+# Telethon Imports
 from telethon import TelegramClient, events, functions, types
-from telethon.sessions import StringSession StringSession
+from telethon.sessions import StringSession  # Fixed: No double text here
 
 # ==========================================
 # SECTION 1: CONFIGURATION & DATABASE
@@ -26,7 +28,11 @@ if not all([API_ID, API_HASH, STRING_SESSION, DATABASE_URL]):
     time.sleep(10)
     sys.exit(1)
 
-API_ID = int(API_ID)
+try:
+    API_ID = int(API_ID)
+except ValueError:
+    print("❌ [CRITICAL] API_ID must be a number!")
+    sys.exit(1)
 
 # 3. Initialize Threaded Connection Pool
 try:
@@ -38,7 +44,6 @@ try:
     print("✅ [DATABASE] Connection Pool Initialized.")
     
     # --- AUTO-TABLE CREATION ---
-    # This prevents the bot from crashing if the table is missing
     conn = db_pool.getconn()
     with conn.cursor() as cur:
         cur.execute("""
@@ -58,10 +63,11 @@ except Exception as e:
     time.sleep(10)
     sys.exit(1)
 
-# 4. Initialize Telethon Client (Your Main Account Session)
+# 4. Initialize Telethon Client
+# This uses your Main Account session to act as the bot
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
-# 5. Database Helper Function
+# 5. Database Helper Functions
 def get_user_channel(user_id):
     """Retrieves the saved target channel for a specific user"""
     conn = None
@@ -79,7 +85,7 @@ def get_user_channel(user_id):
             db_pool.putconn(conn)
 
 def is_authorized(user_id):
-    """Checks if a user is the Super Admin or a promoted Database Admin"""
+    """Checks if a user is the Super Admin or a database admin"""
     if user_id == SUPER_ADMIN_ID:
         return True
     conn = None
@@ -92,7 +98,8 @@ def is_authorized(user_id):
     except:
         return False
     finally:
-        if conn: db_pool.putconn(conn)
+        if conn:
+            db_pool.putconn(conn)
 # ==========================================
 # SECTION 2: DATABASE LOGIC (ADMINS/USERS/PRIVACY)
 # ==========================================
